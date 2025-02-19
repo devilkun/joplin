@@ -1,9 +1,9 @@
-import { NotificationLevel } from '../../db';
+import { NotificationLevel } from '../../services/database/types';
 import routeHandler from '../../middleware/routeHandler';
 import { NotificationKey } from '../../models/NotificationModel';
 import { beforeAllDb, afterAllTests, beforeEachDb, koaAppContext, models, createUserAndSession } from '../../utils/testing/testUtils';
 
-describe('index_notification', function() {
+describe('index_notification', () => {
 
 	beforeAll(async () => {
 		await beforeAllDb('index_notification');
@@ -17,14 +17,14 @@ describe('index_notification', function() {
 		await beforeEachDb();
 	});
 
-	test('should update notification', async function() {
+	test('should update notification', async () => {
 		const { user, session } = await createUserAndSession();
 
 		const model = models().notification();
 
-		await model.add(user.id, NotificationKey.ConfirmEmail, NotificationLevel.Normal, 'testing notification');
+		await model.add(user.id, NotificationKey.EmailConfirmed, NotificationLevel.Normal, 'testing notification');
 
-		const notification = await model.loadByKey(user.id, NotificationKey.ConfirmEmail);
+		const notification = await model.loadByKey(user.id, NotificationKey.EmailConfirmed);
 
 		expect(notification.read).toBe(0);
 
@@ -41,7 +41,7 @@ describe('index_notification', function() {
 
 		await routeHandler(context);
 
-		expect((await model.loadByKey(user.id, NotificationKey.ConfirmEmail)).read).toBe(1);
+		expect((await model.loadByKey(user.id, NotificationKey.EmailConfirmed)).read).toBe(1);
 	});
 
 });
