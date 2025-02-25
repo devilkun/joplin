@@ -1,10 +1,16 @@
-import { User } from '../../db';
+import { User } from '../../services/database/types';
 import { accountByType } from '../UserModel';
 
 export function getCanShareFolder(user: User): number {
 	if (!('account_type' in user) || !('can_share_folder' in user)) throw new Error('Missing account_type or can_share_folder property');
 	const account = accountByType(user.account_type);
 	return user.can_share_folder !== null ? user.can_share_folder : account.can_share_folder;
+}
+
+export function getCanReceiveFolder(user: User): number {
+	if (!('account_type' in user) || !('can_receive_folder' in user)) throw new Error('Missing account_type or can_receive_folder property');
+	const account = accountByType(user.account_type);
+	return user.can_receive_folder !== null ? user.can_receive_folder : account.can_receive_folder;
 }
 
 export function getMaxItemSize(user: User): number {

@@ -1,5 +1,6 @@
 // This is the API that JS files loaded from the webview can see
 const webviewApiPromises_ = {};
+let viewMessageHandler_ = () => {};
 
 // eslint-disable-next-line no-unused-vars, @typescript-eslint/no-unused-vars
 const webviewApi = {
@@ -22,6 +23,13 @@ const webviewApi = {
 
 		return promise;
 	},
+
+	onMessage: function(viewMessageHandler) {
+		viewMessageHandler_ = viewMessageHandler;
+		window.postMessage({
+			target: 'postMessageService.registerViewMessageHandler',
+		});
+	},
 };
 
 (function() {
@@ -43,6 +51,7 @@ const webviewApi = {
 
 	docReady(() => {
 		const rootElement = document.createElement('div');
+		rootElement.setAttribute('id', 'joplin-plugin-content-root');
 		document.getElementsByTagName('body')[0].appendChild(rootElement);
 
 		const contentElement = document.createElement('div');
@@ -79,6 +88,7 @@ const webviewApi = {
 				// console.debug('UserWebviewIndex: setting html to', args.html);
 
 				window.requestAnimationFrame(() => {
+					// eslint-disable-next-line no-console
 					console.debug('UserWebviewIndex: setting html callback', args.hash);
 					window.postMessage({ target: 'UserWebview', message: 'htmlIsSet', hash: args.hash }, '*');
 				});
@@ -117,7 +127,7 @@ const webviewApi = {
 				const message = event.message;
 				const promise = webviewApiPromises_[message.responseId];
 				if (!promise) {
-					console.warn('postMessageService.response: could not find callback for message', message);
+					console.warn('postMessageService.response: Could not find recorded promise to process message response', message);
 					return;
 				}
 
@@ -127,8 +137,17 @@ const webviewApi = {
 					promise.resolve(message.response);
 				}
 			},
+
+			'postMessageService.plugin_message': (message) => {
+				if (!viewMessageHandler_) {
+					console.warn('postMessageService.plugin_message: Could not process message because no onMessage handler was defined', message);
+					return;
+				}
+				viewMessageHandler_(message);
+			},
 		};
 
+		// respond to window.postMessage({})
 		window.addEventListener('message', ((event) => {
 			if (!event.data || event.data.target !== 'webview') return;
 
@@ -138,6 +157,7 @@ const webviewApi = {
 			if (!ipc[callName]) {
 				console.warn('Missing IPC function:', event.data);
 			} else {
+				// eslint-disable-next-line no-console
 				console.debug('UserWebviewIndex: Got message', callName, args);
 				ipc[callName](args);
 			}
@@ -149,6 +169,7 @@ const webviewApi = {
 		// Need to send it with a delay to make sure all listeners are
 		// ready when the message is sent.
 		window.requestAnimationFrame(() => {
+			// eslint-disable-next-line no-console
 			console.debug('UserWebViewIndex: calling isReady');
 			window.postMessage({ target: 'UserWebview', message: 'ready' }, '*');
 		});
