@@ -1,26 +1,42 @@
-import { connectDb, disconnectDb, migrateDb } from '../db';
+import { connectDb, disconnectDb, migrateLatest } from '../db';
 import * as fs from 'fs-extra';
 import { DatabaseConfig } from '../utils/types';
 
 const { execCommand } = require('@joplin/tools/tool-utils');
 
 export interface CreateDbOptions {
-	dropIfExists: boolean;
+	dropIfExists?: boolean;
+	autoMigrate?: boolean;
+	envValues?: Record<string, string>;
 }
 
 export interface DropDbOptions {
 	ignoreIfNotExists: boolean;
 }
 
+const getPostgresToolPath = async (name: string) => {
+	const candidates = [
+		'/usr/local/opt/postgresql@16/bin',
+	];
+
+	for (const candidate of candidates) {
+		const p = `${candidate}/${name}`;
+		if (await fs.pathExists(p)) return p;
+	}
+
+	return name;
+};
+
 export async function createDb(config: DatabaseConfig, options: CreateDbOptions = null) {
 	options = {
 		dropIfExists: false,
+		autoMigrate: true,
 		...options,
 	};
 
 	if (config.client === 'pg') {
 		const cmd: string[] = [
-			'createdb',
+			await getPostgresToolPath('createdb'),
 			'--host', config.host,
 			'--port', config.port.toString(),
 			'--username', config.user,
@@ -46,7 +62,7 @@ export async function createDb(config: DatabaseConfig, options: CreateDbOptions 
 
 	try {
 		const db = await connectDb(config);
-		await migrateDb(db);
+		if (options.autoMigrate) await migrateLatest(db);
 		await disconnectDb(db);
 	} catch (error) {
 		error.message += `: ${config.name}`;
@@ -62,7 +78,7 @@ export async function dropDb(config: DatabaseConfig, options: DropDbOptions = nu
 
 	if (config.client === 'pg') {
 		const cmd: string[] = [
-			'dropdb',
+			await getPostgresToolPath('dropdb'),
 			'--host', config.host,
 			'--port', config.port.toString(),
 			'--username', config.user,

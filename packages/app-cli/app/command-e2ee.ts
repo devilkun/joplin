@@ -1,24 +1,25 @@
-const { BaseCommand } = require('./base-command.js');
+const BaseCommand = require('./base-command').default;
 import { _ } from '@joplin/lib/locale';
-import EncryptionService from '@joplin/lib/services/EncryptionService';
+import EncryptionService from '@joplin/lib/services/e2ee/EncryptionService';
 import DecryptionWorker from '@joplin/lib/services/DecryptionWorker';
 import BaseItem from '@joplin/lib/models/BaseItem';
 import Setting from '@joplin/lib/models/Setting';
 import shim from '@joplin/lib/shim';
 import * as pathUtils from '@joplin/lib/path-utils';
-const imageType = require('image-type');
-const readChunk = require('read-chunk');
+import { getEncryptionEnabled, localSyncInfo } from '@joplin/lib/services/synchronizer/syncInfoUtils';
+import { generateMasterKeyAndEnableEncryption, loadMasterKeysFromSettings, masterPasswordIsValid, setupAndDisableEncryption } from '@joplin/lib/services/e2ee/utils';
+import { fromFile as fileTypeFromFile } from 'file-type';
 
 class Command extends BaseCommand {
-	usage() {
+	public usage() {
 		return 'e2ee <command> [path]';
 	}
 
-	description() {
-		return _('Manages E2EE configuration. Commands are `enable`, `disable`, `decrypt`, `status`, `decrypt-file` and `target-status`.');
+	public description() {
+		return _('Manages E2EE configuration. Commands are `enable`, `disable`, `decrypt`, `status`, `decrypt-file`, and `target-status`.'); // `generate-ppk`
 	}
 
-	options() {
+	public options() {
 		return [
 			// This is here mostly for testing - shouldn't be used
 			['-p, --password <password>', 'Use this password as master password (For security reasons, it is not recommended to use this option).'],
@@ -28,9 +29,11 @@ class Command extends BaseCommand {
 		];
 	}
 
-	async action(args: any) {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+	public async action(args: any) {
 		const options = args.options;
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		const askForMasterKey = async (error: any) => {
 			const masterKeyId = error.masterKeyId;
 			const password = await this.prompt(_('Enter master password:'), { type: 'string', secure: true });
@@ -38,8 +41,15 @@ class Command extends BaseCommand {
 				this.stdout(_('Operation cancelled'));
 				return false;
 			}
+
+			const masterKey = localSyncInfo().masterKeys.find(mk => mk.id === masterKeyId);
+			if (!(await masterPasswordIsValid(password, masterKey))) {
+				this.stdout(_('Invalid password'));
+				return false;
+			}
+
 			Setting.setObjectValue('encryption.passwordCache', masterKeyId, password);
-			await EncryptionService.instance().loadMasterKeysFromSettings();
+			await loadMasterKeysFromSettings(EncryptionService.instance());
 			return true;
 		};
 
@@ -93,12 +103,12 @@ class Command extends BaseCommand {
 				}
 			}
 
-			await EncryptionService.instance().generateMasterKeyAndEnableEncryption(password);
+			await generateMasterKeyAndEnableEncryption(EncryptionService.instance(), password);
 			return;
 		}
 
 		if (args.command === 'disable') {
-			await EncryptionService.instance().disableEncryption();
+			await setupAndDisableEncryption(EncryptionService.instance());
 			return;
 		}
 
@@ -115,7 +125,7 @@ class Command extends BaseCommand {
 		}
 
 		if (args.command === 'status') {
-			this.stdout(_('Encryption is: %s', Setting.value('encryption.enabled') ? _('Enabled') : _('Disabled')));
+			this.stdout(_('Encryption is: %s', getEncryptionEnabled() ? _('Enabled') : _('Disabled')));
 			return;
 		}
 
@@ -125,8 +135,7 @@ class Command extends BaseCommand {
 					const outputDir = options.output ? options.output : require('os').tmpdir();
 					let outFile = `${outputDir}/${pathUtils.filename(args.path)}.${Date.now()}.bin`;
 					await EncryptionService.instance().decryptFile(args.path, outFile);
-					const buffer = await readChunk(outFile, 0, 64);
-					const detectedType = imageType(buffer);
+					const detectedType = await fileTypeFromFile(outFile);
 
 					if (detectedType) {
 						const newOutFile = `${outFile}.${detectedType.ext}`;
@@ -149,6 +158,19 @@ class Command extends BaseCommand {
 			return;
 		}
 
+		// if (args.command === 'generate-ppk') {
+		// 	const syncInfo = localSyncInfo();
+		// 	if (syncInfo.ppk) throw new Error('This account already has a public-private key pair');
+
+		// 	const argPassword = options.password ? options.password.toString() : '';
+		// 	if (!argPassword) throw new Error('Password must be provided'); // TODO: should get from prompt
+		// 	const ppk = await generateKeyPair(EncryptionService.instance(), argPassword);
+
+		// 	syncInfo.ppk = ppk;
+		// 	saveLocalSyncInfo(syncInfo);
+		// 	await Setting.saveAll();
+		// }
+
 		if (args.command === 'target-status') {
 			const fs = require('fs-extra');
 
@@ -157,6 +179,7 @@ class Command extends BaseCommand {
 
 			const dirPaths = function(targetPath: string) {
 				const paths: string[] = [];
+				// eslint-disable-next-line github/array-foreach -- Old code before rule was applied
 				fs.readdirSync(targetPath).forEach((path: string) => {
 					paths.push(path);
 				});

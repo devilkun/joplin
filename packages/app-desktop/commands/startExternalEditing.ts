@@ -3,11 +3,11 @@ import { _ } from '@joplin/lib/locale';
 import { stateUtils } from '@joplin/lib/reducer';
 import ExternalEditWatcher from '@joplin/lib/services/ExternalEditWatcher';
 import Note from '@joplin/lib/models/Note';
-const bridge = require('electron').remote.require('./bridge').default;
+const bridge = require('@electron/remote').require('./bridge').default;
 
 export const declaration: CommandDeclaration = {
 	name: 'startExternalEditing',
-	label: () => _('Edit in external editor'),
+	label: () => _('Open in external editor'),
 	iconName: 'icon-share',
 };
 
@@ -23,6 +23,6 @@ export const runtime = (): CommandRuntime => {
 				bridge().showErrorMessageBox(_('Error opening note in editor: %s', error.message));
 			}
 		},
-		enabledCondition: 'oneNoteSelected',
+		enabledCondition: 'oneNoteSelected && !noteIsReadOnly',
 	};
 };
