@@ -1,8 +1,11 @@
 import { knex, Knex } from 'knex';
-import { DatabaseConfig } from './utils/types';
+import { DatabaseConfig, DatabaseConfigClient } from './utils/types';
 import * as pathUtils from 'path';
 import time from '@joplin/lib/time';
-import Logger from '@joplin/lib/Logger';
+import Logger from '@joplin/utils/Logger';
+import { databaseSchema } from './services/database/types';
+import { compareVersions } from 'compare-versions';
+import { copyFile } from 'fs-extra';
 
 // Make sure bigInteger values are numbers and not strings
 //
@@ -10,11 +13,25 @@ import Logger from '@joplin/lib/Logger';
 //
 // In our case, all bigInteger are timestamps, which JavaScript can handle
 // fine as numbers.
-require('pg').types.setTypeParser(20, function(val: any) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+require('pg').types.setTypeParser(20, (val: any) => {
 	return parseInt(val, 10);
 });
 
+// Also need this to get integers for count() queries.
+// https://knexjs.org/#Builder-count
+declare module 'knex/types/result' {
+	interface Registry {
+		Count: number;
+	}
+}
+
 const logger = Logger.create('db');
+
+// To prevent error "SQLITE_ERROR: too many SQL variables", SQL statements with
+// "IN" clauses shouldn't contain more than the number of variables below.s
+// https://www.sqlite.org/limits.html#max_variable_number
+export const SqliteMaxVariableNum = 999;
 
 const migrationDir = `${__dirname}/migrations`;
 export const sqliteDefaultDir = pathUtils.dirname(__dirname);
@@ -31,6 +48,12 @@ export interface DbConfigConnection {
 	database?: string;
 	filename?: string;
 	password?: string;
+	connectionString?: string;
+}
+
+export interface QueryContext {
+	uniqueConstraintErrorLoggingDisabled?: boolean;
+	noSuchTableErrorLoggingDisabled?: boolean;
 }
 
 export interface KnexDatabaseConfig {
@@ -42,9 +65,16 @@ export interface KnexDatabaseConfig {
 
 export interface ConnectionCheckResult {
 	isCreated: boolean;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	error: any;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	latestMigration: any;
 	connection: DbConnection;
+}
+
+export interface Migration {
+	name: string;
+	done: boolean;
 }
 
 export function makeKnexConfig(dbConfig: DatabaseConfig): KnexDatabaseConfig {
@@ -53,11 +83,15 @@ export function makeKnexConfig(dbConfig: DatabaseConfig): KnexDatabaseConfig {
 	if (dbConfig.client === 'sqlite3') {
 		connection.filename = dbConfig.name;
 	} else {
-		connection.database = dbConfig.name;
-		connection.host = dbConfig.host;
-		connection.port = dbConfig.port;
-		connection.user = dbConfig.user;
-		connection.password = dbConfig.password;
+		if (dbConfig.connectionString) {
+			connection.connectionString = dbConfig.connectionString;
+		} else {
+			connection.database = dbConfig.name;
+			connection.host = dbConfig.host;
+			connection.port = dbConfig.port;
+			connection.user = dbConfig.user;
+			connection.password = dbConfig.password;
+		}
 	}
 
 	return {
@@ -68,14 +102,14 @@ export function makeKnexConfig(dbConfig: DatabaseConfig): KnexDatabaseConfig {
 	};
 }
 
-export async function waitForConnection(dbConfig: DatabaseConfig): Promise<ConnectionCheckResult> {
+export async function waitForConnection(masterConfig: DatabaseConfig): Promise<ConnectionCheckResult> {
 	const timeout = 30000;
 	const startTime = Date.now();
 	let lastError = { message: '' };
 
 	while (true) {
 		try {
-			const connection = await connectDb(dbConfig);
+			const connection = await connectDb(masterConfig);
 			const check = await connectionCheck(connection);
 			if (check.error) throw check.error;
 			return check;
@@ -93,40 +127,271 @@ export async function waitForConnection(dbConfig: DatabaseConfig): Promise<Conne
 	}
 }
 
+export const clientType = (db: DbConnection): DatabaseConfigClient => {
+	return db.client.config.client;
+};
+
+export const returningSupported = (db: DbConnection) => {
+	return clientType(db) === DatabaseConfigClient.PostgreSQL;
+};
+
+export const isPostgres = (db: DbConnection) => {
+	return clientType(db) === DatabaseConfigClient.PostgreSQL;
+};
+
+export const isSqlite = (db: DbConnection) => {
+	return clientType(db) === DatabaseConfigClient.SQLite;
+};
+
+export const setCollateC = async (db: DbConnection, tableName: string, columnName: string): Promise<void> => {
+	if (!isPostgres(db)) return;
+	await db.raw(`ALTER TABLE ${tableName} ALTER COLUMN ${columnName} SET DATA TYPE character varying(32) COLLATE "C"`);
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+function makeSlowQueryHandler(duration: number, connection: any, sql: string, bindings: any[]) {
+	return setTimeout(() => {
+		try {
+			logger.warn(`Slow query (${duration}ms+):`, connection.raw(sql, bindings).toString());
+		} catch (error) {
+			logger.error('Could not log slow query', { sql, bindings }, error);
+		}
+	}, duration);
+}
+
+export function setupSlowQueryLog(connection: DbConnection, slowQueryLogMinDuration: number) {
+	interface QueryInfo {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+		timeoutId: any;
+		startTime: number;
+	}
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+	const queryInfos: Record<any, QueryInfo> = {};
+
+	// These queries do not return a response, so "query-response" is not
+	// called.
+	const ignoredQueries = /^BEGIN|SAVEPOINT|RELEASE SAVEPOINT|COMMIT|ROLLBACK/gi;
+
+	connection.on('query', (data) => {
+		const sql: string = data.sql;
+
+		if (!sql || sql.match(ignoredQueries)) return;
+
+		const timeoutId = makeSlowQueryHandler(slowQueryLogMinDuration, connection, sql, data.bindings);
+
+		queryInfos[data.__knexQueryUid] = {
+			timeoutId,
+			startTime: Date.now(),
+		};
+	});
+
+	connection.on('query-response', (_response, data) => {
+		const q = queryInfos[data.__knexQueryUid];
+		if (q) {
+			clearTimeout(q.timeoutId);
+			delete queryInfos[data.__knexQueryUid];
+		}
+	});
+
+	connection.on('query-error', (_response, data) => {
+		const q = queryInfos[data.__knexQueryUid];
+		if (q) {
+			clearTimeout(q.timeoutId);
+			delete queryInfos[data.__knexQueryUid];
+		}
+	});
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+const filterBindings = (bindings: any[]): Record<string, any> => {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+	const output: Record<string, any> = {};
+
+	for (let i = 0; i < bindings.length; i++) {
+		let value = bindings[i];
+		if (typeof value === 'string') value = value.substr(0, 200);
+		if (Buffer.isBuffer(value)) value = '<binary>';
+		output[`$${i + 1}`] = value;
+	}
+
+	return output;
+};
+
+interface KnexQueryErrorResponse {
+	message: string;
+}
+
+interface KnexQueryErrorData {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+	bindings: any[];
+	queryContext: QueryContext;
+}
+
+const dbConnectionConfigs_: Map<DbConnection, DatabaseConfig> = new Map();
+
 export async function connectDb(dbConfig: DatabaseConfig): Promise<DbConnection> {
 	const connection = knex(makeKnexConfig(dbConfig));
 
-	const debugSlowQueries = false;
-
-	if (debugSlowQueries) {
-		const startTimes: Record<string, number> = {};
-
-		const slowQueryDuration = 10;
-
-		connection.on('query', (data) => {
-			startTimes[data.__knexQueryUid] = Date.now();
-		});
-
-		connection.on('query-response', (_response, data) => {
-			const duration = Date.now() - startTimes[data.__knexQueryUid];
-			if (duration < slowQueryDuration) return;
-			console.info(`SQL: ${data.sql} (${duration}ms)`);
-		});
+	if (dbConfig.slowQueryLogEnabled) {
+		setupSlowQueryLog(connection, dbConfig.slowQueryLogMinDuration);
 	}
+
+	connection.on('query-error', (response: KnexQueryErrorResponse, data: KnexQueryErrorData) => {
+		// It is possible to set certain properties on the query context to
+		// disable this handler. This is useful for example for constraint
+		// errors which are often already handled application side.
+
+		if (data.queryContext) {
+			if (data.queryContext.uniqueConstraintErrorLoggingDisabled && isUniqueConstraintError(response)) {
+				return;
+			}
+
+			if (data.queryContext.noSuchTableErrorLoggingDisabled && isNoSuchTableError(response)) {
+				return;
+			}
+		}
+
+		const msg: string[] = [];
+		msg.push(response.message);
+		if (data.bindings && data.bindings.length) msg.push(JSON.stringify(filterBindings(data.bindings), null, '  '));
+		logger.error(...msg);
+	});
+
+	dbConnectionConfigs_.set(connection, dbConfig);
 
 	return connection;
 }
+
+export const reconnectDb = async (db: DbConnection) => {
+	const dbConfig = dbConnectionConfigs_.get(db);
+
+	await disconnectDb(db);
+
+	await db.initialize(makeKnexConfig(dbConfig));
+};
 
 export async function disconnectDb(db: DbConnection) {
 	await db.destroy();
 }
 
-export async function migrateDb(db: DbConnection) {
+// This is used in tests to simulate replication in a controlled way. It allows testing how the
+// server behaves when part of the data is stale.
+export const sqliteSyncSlave = async (master: DbConnection, slave: DbConnection) => {
+	const masterConfig = dbConnectionConfigs_.get(master);
+	const slaveConfig = dbConnectionConfigs_.get(slave);
+	await disconnectDb(master);
+	await disconnectDb(slave);
+	await copyFile(masterConfig.name, slaveConfig.name);
+	await reconnectDb(master);
+	await reconnectDb(slave);
+};
+
+export async function migrateLatest(db: DbConnection, disableTransactions = false) {
 	await db.migrate.latest({
 		directory: migrationDir,
-		// Disable transactions because the models might open one too
-		disableTransactions: true,
+		disableTransactions,
 	});
+}
+
+export async function migrateUp(db: DbConnection, disableTransactions = false) {
+	await db.migrate.up({
+		directory: migrationDir,
+		disableTransactions,
+	});
+}
+
+export async function migrateDown(db: DbConnection, disableTransactions = false) {
+	await db.migrate.down({
+		directory: migrationDir,
+		disableTransactions,
+	});
+}
+
+export async function migrateUnlock(db: DbConnection) {
+	await db.migrate.forceFreeMigrationsLock();
+}
+
+export async function migrateList(db: DbConnection, asString = true) {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+	const migrations: any = await db.migrate.list({
+		directory: migrationDir,
+	});
+
+	// The migration array has a rather inconsistent format:
+	//
+	// [
+	//   // Done migrations
+	//   [
+	//     '20210809222118_email_key_fix.js',
+	//     '20210814123815_testing.js',
+	//     '20210814123816_testing.js'
+	//   ],
+	//   // Not done migrations
+	//   [
+	//     {
+	//       file: '20210814123817_testing.js',
+	//       directory: '/path/to/packages/server/dist/migrations'
+	//     }
+	//   ]
+	// ]
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+	const getMigrationName = (migrationInfo: any) => {
+		if (migrationInfo && migrationInfo.name) return migrationInfo.name;
+		if (migrationInfo && migrationInfo.file) return migrationInfo.file;
+		return migrationInfo;
+	};
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+	const formatName = (migrationInfo: any) => {
+		const s = getMigrationName(migrationInfo).split('.');
+		s.pop();
+		return s.join('.');
+	};
+
+	const output: Migration[] = [];
+
+	for (const s of migrations[0]) {
+		output.push({
+			name: formatName(s),
+			done: true,
+		});
+	}
+
+	for (const s of migrations[1]) {
+		output.push({
+			name: formatName(s),
+			done: false,
+		});
+	}
+
+	output.sort((a, b) => {
+		return a.name < b.name ? -1 : +1;
+	});
+
+	if (!asString) return output;
+
+	return output.map(l => `${l.done ? '✓' : '✗'} ${l.name}`).join('\n');
+}
+
+export const needsMigration = async (db: DbConnection) => {
+	const list = await migrateList(db, false) as Migration[];
+	return !!list.find(m => !m.done);
+};
+
+export async function nextMigration(db: DbConnection): Promise<string> {
+	const list = await migrateList(db, false) as Migration[];
+
+	let nextMigration: Migration = null;
+
+	while (list.length) {
+		const migration = list.pop();
+		if (migration.done) return nextMigration ? nextMigration.name : '';
+		nextMigration = migration;
+	}
+
+	return '';
 }
 
 function allTableNames(): string[] {
@@ -147,8 +412,10 @@ export async function dropTables(db: DbConnection): Promise<void> {
 	}
 }
 
-export async function truncateTables(db: DbConnection): Promise<void> {
+export async function truncateTables(db: DbConnection, includedTables: string[] = []): Promise<void> {
 	for (const tableName of allTableNames()) {
+		if (includedTables.length && !includedTables.includes(tableName)) continue;
+
 		try {
 			await db(tableName).truncate();
 		} catch (error) {
@@ -158,6 +425,7 @@ export async function truncateTables(db: DbConnection): Promise<void> {
 	}
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 function isNoSuchTableError(error: any): boolean {
 	if (error) {
 		// Postgres error: 42P01: undefined_table
@@ -170,6 +438,7 @@ function isNoSuchTableError(error: any): boolean {
 	return false;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 export function isUniqueConstraintError(error: any): boolean {
 	if (error) {
 		// Postgres error: 23505: unique_violation
@@ -182,10 +451,36 @@ export function isUniqueConstraintError(error: any): boolean {
 	return false;
 }
 
-export async function latestMigration(db: DbConnection): Promise<any> {
+const parsePostgresVersionString = (versionString: string) => {
+	// PostgreSQL 16.1 (Debian 16.1-1.pgdg120+1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14) 12.2.0, 64-bit
+	const matches = versionString.match(/PostgreSQL ([0-9.]+)/);
+	if (!matches || matches.length !== 2) throw new Error(`Cannot parse Postgres version string: ${versionString}`);
+	return matches[1];
+};
+
+export const versionCheck = async (db: DbConnection) => {
+	if (isPostgres(db)) {
+		// We only support Postgres v12+
+		// https://github.com/laurent22/joplin/issues/9695
+		// https://www.postgresql.org/docs/current/rules-materializedviews.html
+		const minPostgresVersion = '12.0';
+		const result = await db.select(db.raw('version()')).first();
+		if (result && result.version) {
+			const version = parsePostgresVersionString(result.version);
+			if (compareVersions(version, minPostgresVersion) < 0) throw new Error(`Postgres version not supported: ${result.version}. Min required version is: ${minPostgresVersion}`);
+		} else {
+			throw new Error(`Could not fetch Postgres version info. Got: ${JSON.stringify(result)}`);
+		}
+	} else {
+		// Not implemented
+	}
+};
+
+export async function latestMigration(db: DbConnection): Promise<Migration | null> {
 	try {
-		const result = await db('knex_migrations').select('name').orderBy('id', 'asc').first();
-		return result;
+		const context: QueryContext = { noSuchTableErrorLoggingDisabled: true };
+		const result = await db('knex_migrations').queryContext(context).select('name').orderBy('id', 'desc').first();
+		return { name: result.name, done: true };
 	} catch (error) {
 		// If the database has never been initialized, we return null, so
 		// for this we need to check the error code, which will be
@@ -215,379 +510,3 @@ export async function connectionCheck(db: DbConnection): Promise<ConnectionCheck
 		};
 	}
 }
-
-export type Uuid = string;
-
-export enum ItemAddressingType {
-	Id = 1,
-	Path,
-}
-
-export enum NotificationLevel {
-	Important = 10,
-	Normal = 20,
-}
-
-export enum ItemType {
-    Item = 1,
-	UserItem = 2,
-	User,
-}
-
-export enum EmailSender {
-	NoReply = 1,
-	Support = 2,
-}
-
-export enum ChangeType {
-	Create = 1,
-	Update = 2,
-	Delete = 3,
-}
-
-export enum FileContentType {
-	Any = 1,
-	JoplinItem = 2,
-}
-
-export function changeTypeToString(t: ChangeType): string {
-	if (t === ChangeType.Create) return 'create';
-	if (t === ChangeType.Update) return 'update';
-	if (t === ChangeType.Delete) return 'delete';
-	throw new Error(`Unkown type: ${t}`);
-}
-
-export enum ShareType {
-	Note = 1, // When a note is shared via a public link
-	Folder = 3, // When a complete folder is shared with another Joplin Server user
-}
-
-export enum ShareUserStatus {
-	Waiting = 0,
-	Accepted = 1,
-	Rejected = 2,
-}
-
-export interface WithDates {
-	updated_time?: number;
-	created_time?: number;
-}
-
-export interface WithUuid {
-	id?: Uuid;
-}
-
-interface DatabaseTableColumn {
-	type: string;
-}
-
-interface DatabaseTable {
-	[key: string]: DatabaseTableColumn;
-}
-
-interface DatabaseTables {
-	[key: string]: DatabaseTable;
-}
-
-// AUTO-GENERATED-TYPES
-// Auto-generated using `npm run generate-types`
-export interface Session extends WithDates, WithUuid {
-	user_id?: Uuid;
-	auth_code?: string;
-}
-
-export interface File {
-	id?: Uuid;
-	owner_id?: Uuid;
-	name?: string;
-	content?: any;
-	mime_type?: string;
-	size?: number;
-	is_directory?: number;
-	is_root?: number;
-	parent_id?: Uuid;
-	updated_time?: string;
-	created_time?: string;
-	source_file_id?: Uuid;
-	content_type?: number;
-	content_id?: Uuid;
-}
-
-export interface ApiClient extends WithDates, WithUuid {
-	name?: string;
-	secret?: string;
-}
-
-export interface Notification extends WithDates, WithUuid {
-	owner_id?: Uuid;
-	level?: NotificationLevel;
-	key?: string;
-	message?: string;
-	read?: number;
-	canBeDismissed?: number;
-}
-
-export interface ShareUser extends WithDates, WithUuid {
-	share_id?: Uuid;
-	user_id?: Uuid;
-	status?: ShareUserStatus;
-}
-
-export interface Item extends WithDates, WithUuid {
-	name?: string;
-	mime_type?: string;
-	content?: Buffer;
-	content_size?: number;
-	jop_id?: Uuid;
-	jop_parent_id?: Uuid;
-	jop_share_id?: Uuid;
-	jop_type?: number;
-	jop_encryption_applied?: number;
-	jop_updated_time?: number;
-}
-
-export interface UserItem extends WithDates {
-	id?: number;
-	user_id?: Uuid;
-	item_id?: Uuid;
-}
-
-export interface ItemResource {
-	id?: number;
-	item_id?: Uuid;
-	resource_id?: Uuid;
-}
-
-export interface KeyValue {
-	id?: number;
-	key?: string;
-	type?: number;
-	value?: string;
-}
-
-export interface Share extends WithDates, WithUuid {
-	owner_id?: Uuid;
-	item_id?: Uuid;
-	type?: ShareType;
-	folder_id?: Uuid;
-	note_id?: Uuid;
-}
-
-export interface Change extends WithDates, WithUuid {
-	counter?: number;
-	item_type?: ItemType;
-	item_id?: Uuid;
-	item_name?: string;
-	type?: ChangeType;
-	previous_item?: string;
-	user_id?: Uuid;
-}
-
-export interface Email extends WithDates {
-	id?: number;
-	recipient_name?: string;
-	recipient_email?: string;
-	recipient_id?: Uuid;
-	sender_id?: EmailSender;
-	subject?: string;
-	body?: string;
-	sent_time?: number;
-	sent_success?: number;
-	error?: string;
-	key?: string;
-}
-
-export interface Token extends WithDates {
-	id?: number;
-	value?: string;
-	user_id?: Uuid;
-}
-
-export interface Subscription {
-	id?: number;
-	user_id?: Uuid;
-	stripe_user_id?: Uuid;
-	stripe_subscription_id?: Uuid;
-	last_payment_time?: number;
-	last_payment_failed_time?: number;
-	updated_time?: string;
-	created_time?: string;
-	is_deleted?: number;
-}
-
-export interface User extends WithDates, WithUuid {
-	email?: string;
-	password?: string;
-	full_name?: string;
-	is_admin?: number;
-	email_confirmed?: number;
-	must_set_password?: number;
-	account_type?: number;
-	can_upload?: number;
-	max_item_size?: number | null;
-	can_share_folder?: number | null;
-	can_share_note?: number | null;
-	max_total_item_size?: number | null;
-	total_item_size?: number;
-	enabled?: number;
-}
-
-export const databaseSchema: DatabaseTables = {
-	sessions: {
-		id: { type: 'string' },
-		user_id: { type: 'string' },
-		auth_code: { type: 'string' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-	},
-	files: {
-		id: { type: 'string' },
-		owner_id: { type: 'string' },
-		name: { type: 'string' },
-		content: { type: 'any' },
-		mime_type: { type: 'string' },
-		size: { type: 'number' },
-		is_directory: { type: 'number' },
-		is_root: { type: 'number' },
-		parent_id: { type: 'string' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-		source_file_id: { type: 'string' },
-		content_type: { type: 'number' },
-		content_id: { type: 'string' },
-	},
-	api_clients: {
-		id: { type: 'string' },
-		name: { type: 'string' },
-		secret: { type: 'string' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-	},
-	notifications: {
-		id: { type: 'string' },
-		owner_id: { type: 'string' },
-		level: { type: 'number' },
-		key: { type: 'string' },
-		message: { type: 'string' },
-		read: { type: 'number' },
-		canBeDismissed: { type: 'number' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-	},
-	share_users: {
-		id: { type: 'string' },
-		share_id: { type: 'string' },
-		user_id: { type: 'string' },
-		status: { type: 'number' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-	},
-	items: {
-		id: { type: 'string' },
-		name: { type: 'string' },
-		mime_type: { type: 'string' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-		content: { type: 'any' },
-		content_size: { type: 'number' },
-		jop_id: { type: 'string' },
-		jop_parent_id: { type: 'string' },
-		jop_share_id: { type: 'string' },
-		jop_type: { type: 'number' },
-		jop_encryption_applied: { type: 'number' },
-		jop_updated_time: { type: 'string' },
-	},
-	user_items: {
-		id: { type: 'number' },
-		user_id: { type: 'string' },
-		item_id: { type: 'string' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-	},
-	item_resources: {
-		id: { type: 'number' },
-		item_id: { type: 'string' },
-		resource_id: { type: 'string' },
-	},
-	key_values: {
-		id: { type: 'number' },
-		key: { type: 'string' },
-		type: { type: 'number' },
-		value: { type: 'string' },
-	},
-	shares: {
-		id: { type: 'string' },
-		owner_id: { type: 'string' },
-		item_id: { type: 'string' },
-		type: { type: 'number' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-		folder_id: { type: 'string' },
-		note_id: { type: 'string' },
-	},
-	changes: {
-		counter: { type: 'number' },
-		id: { type: 'string' },
-		item_type: { type: 'number' },
-		item_id: { type: 'string' },
-		item_name: { type: 'string' },
-		type: { type: 'number' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-		previous_item: { type: 'string' },
-		user_id: { type: 'string' },
-	},
-	emails: {
-		id: { type: 'number' },
-		recipient_name: { type: 'string' },
-		recipient_email: { type: 'string' },
-		recipient_id: { type: 'string' },
-		sender_id: { type: 'number' },
-		subject: { type: 'string' },
-		body: { type: 'string' },
-		sent_time: { type: 'string' },
-		sent_success: { type: 'number' },
-		error: { type: 'string' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-		key: { type: 'string' },
-	},
-	tokens: {
-		id: { type: 'number' },
-		value: { type: 'string' },
-		user_id: { type: 'string' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-	},
-	subscriptions: {
-		id: { type: 'number' },
-		user_id: { type: 'string' },
-		stripe_user_id: { type: 'string' },
-		stripe_subscription_id: { type: 'string' },
-		last_payment_time: { type: 'string' },
-		last_payment_failed_time: { type: 'string' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-		is_deleted: { type: 'number' },
-	},
-	users: {
-		id: { type: 'string' },
-		email: { type: 'string' },
-		password: { type: 'string' },
-		full_name: { type: 'string' },
-		is_admin: { type: 'number' },
-		updated_time: { type: 'string' },
-		created_time: { type: 'string' },
-		email_confirmed: { type: 'number' },
-		must_set_password: { type: 'number' },
-		account_type: { type: 'number' },
-		can_upload: { type: 'number' },
-		max_item_size: { type: 'number' },
-		can_share_folder: { type: 'number' },
-		can_share_note: { type: 'number' },
-		max_total_item_size: { type: 'string' },
-		total_item_size: { type: 'string' },
-		enabled: { type: 'number' },
-	},
-};
-// AUTO-GENERATED-TYPES

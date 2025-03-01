@@ -1,7 +1,8 @@
-import { User } from '../db';
+import { User } from '../services/database/types';
 import { getMaxItemSize, getMaxTotalItemSize, totalSizePercent } from '../models/utils/user';
 import { formatBytes } from './bytes';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 export function yesOrNo(value: any): string {
 	return value ? 'yes' : 'no';
 }

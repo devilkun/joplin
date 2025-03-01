@@ -17,9 +17,9 @@ Then, in the directory where you plan to develop the plugin, run:
 
 	yo joplin
 
-This will generate the basic scafolding of the plugin. At the root of it, there are a number of configuration files which you normally won't need to change. Then the `src/` directory will contain your code. By default, the project uses TypeScript, but you are free to use plain JavaScript too - eventually the project is compiled to plain JS in any case.
+This will generate the basic scaffolding of the plugin. At the root of it, there are a number of configuration files which you normally won't need to change. Then the `src/` directory will contain your code. By default, the project uses TypeScript, but you are free to use plain JavaScript too - eventually the project is compiled to plain JS in any case.
 
-The `src/` directory also contains a [manifest.json](https://github.com/laurent22/joplin/blob/dev/readme/api/references/plugin_manifest.md) file, which contains the various information about the plugin that was set in the inital generation of the scaffolding, such as its name, homepage URL, etc. You can edit this at any time, but editing it after it has been published may cause users to have to download it again.
+The `src/` directory also contains a [manifest.json](https://github.com/laurent22/joplin/blob/dev/readme/api/references/plugin_manifest.md) file, which contains the various information about the plugin that was set in the initial generation of the scaffolding, such as its name, homepage URL, etc. You can edit this at any time, but editing it after it has been published may cause users to have to download it again.
 
 ## Setup Source Control 
 
@@ -55,7 +55,7 @@ This should be the path to your main plugin directory, i.e. `path/to/your/root/p
 ## Test the Plugin, Hello World!
 Restart the Development app from the command line/terminal, and Joplin should load the plugin and execute its `onStart` handler. If all went well you should see the test message in the plugin console: "Hello world. Test plugin started!". You will also be able to see the information from the manifest in the **Settings > Plugins**
 
-# Next steps
+## Next steps
 Great, you now have the basics of a working plugin! 
 
 - Start the [plugin tutorial](https://github.com/laurent22/joplin/blob/dev/readme/api/tutorials/toc_plugin.md) to learn how to use the plugin API.

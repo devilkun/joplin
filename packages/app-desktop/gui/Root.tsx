@@ -1,5 +1,6 @@
 import app from '../app';
-import MainScreen from './MainScreen/MainScreen';
+import { AppState, AppStateDialog } from '../app.reducer';
+import MainScreen from './MainScreen';
 import ConfigScreen from './ConfigScreen/ConfigScreen';
 import StatusScreen from './StatusScreen/StatusScreen';
 import OneDriveLoginScreen from './OneDriveLoginScreen';
@@ -10,8 +11,7 @@ import { Size } from './ResizableLayout/utils/types';
 import MenuBar from './MenuBar';
 import { _ } from '@joplin/lib/locale';
 const React = require('react');
-
-const { render } = require('react-dom');
+const { createRoot } = require('react-dom/client');
 const { connect, Provider } = require('react-redux');
 import Setting from '@joplin/lib/models/Setting';
 import shim from '@joplin/lib/shim';
@@ -19,20 +19,29 @@ import ClipperServer from '@joplin/lib/ClipperServer';
 import DialogTitle from './DialogTitle';
 import DialogButtonRow, { ButtonSpec, ClickEvent, ClickEventHandler } from './DialogButtonRow';
 import Dialog from './Dialog';
-const { ImportScreen } = require('./ImportScreen.min.js');
+import StyleSheetContainer from './StyleSheets/StyleSheetContainer';
+import ImportScreen from './ImportScreen';
 const { ResourceScreen } = require('./ResourceScreen.js');
-const { Navigator } = require('./Navigator.min.js');
-const WelcomeUtils = require('@joplin/lib/WelcomeUtils');
+import Navigator from './Navigator';
+import WelcomeUtils from '@joplin/lib/WelcomeUtils';
+import JoplinCloudLoginScreen from './JoplinCloudLoginScreen';
+import InteropService from '@joplin/lib/services/interop/InteropService';
+import WindowCommandsAndDialogs from './WindowCommandsAndDialogs/WindowCommandsAndDialogs';
+import { defaultWindowId, stateUtils, WindowState } from '@joplin/lib/reducer';
+import bridge from '../services/bridge';
+import EditorWindow from './NoteEditor/EditorWindow';
 const { ThemeProvider, StyleSheetManager, createGlobalStyle } = require('styled-components');
-const bridge = require('electron').remote.require('./bridge').default;
 
 interface Props {
 	themeId: number;
 	appState: string;
+	// eslint-disable-next-line @typescript-eslint/ban-types -- Old code before rule was applied
 	dispatch: Function;
 	size: Size;
 	zoomFactor: number;
 	needApiAuth: boolean;
+	dialogs: AppStateDialog[];
+	secondaryWindowStates: WindowState[];
 }
 
 interface ModalDialogProps {
@@ -42,22 +51,18 @@ interface ModalDialogProps {
 	onClick: ClickEventHandler;
 }
 
+
 const GlobalStyle = createGlobalStyle`
 	* {
 		box-sizing: border-box;
 	}
-
-	div, span, a {
-		/*color: ${(props: any) => props.theme.color};*/
-		/*font-size: ${(props: any) => props.theme.fontSize}px;*/
-		font-family: ${(props: any) => props.theme.fontFamily};
-	}
 `;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 let wcsTimeoutId_: any = null;
 
 async function initialize() {
-	bridge().window().on('resize', function() {
+	bridge().activeWindow().on('resize', () => {
 		if (wcsTimeoutId_) shim.clearTimeout(wcsTimeoutId_);
 
 		wcsTimeoutId_ = shim.setTimeout(() => {
@@ -79,14 +84,23 @@ async function initialize() {
 	});
 
 	store.dispatch({
+		type: 'EDITOR_CODE_VIEW_CHANGE',
+		value: Setting.value('editor.codeView'),
+	});
+
+	store.dispatch({
 		type: 'NOTE_VISIBLE_PANES_SET',
 		panes: Setting.value('noteVisiblePanes'),
 	});
+
+	InteropService.instance().document = document;
+	InteropService.instance().xmlSerializer = new XMLSerializer();
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 class RootComponent extends React.Component<Props, any> {
 	public async componentDidMount() {
-		if (this.props.appState == 'starting') {
+		if (this.props.appState === 'starting') {
 			this.props.dispatch({
 				type: 'APP_STATE_SET',
 				state: 'initializing',
@@ -100,7 +114,7 @@ class RootComponent extends React.Component<Props, any> {
 			});
 		}
 
-		await WelcomeUtils.install(this.props.dispatch);
+		await WelcomeUtils.install(Setting.value('locale'), this.props.dispatch);
 	}
 
 	private renderModalMessage(props: ModalDialogProps) {
@@ -122,7 +136,7 @@ class RootComponent extends React.Component<Props, any> {
 			);
 		};
 
-		return <Dialog renderContent={renderContent}/>;
+		return <Dialog>{renderContent()}</Dialog>;
 	}
 
 	private modalDialogProps(): ModalDialogProps {
@@ -151,6 +165,16 @@ class RootComponent extends React.Component<Props, any> {
 		};
 	}
 
+	private renderSecondaryWindows() {
+		return this.props.secondaryWindowStates.map((windowState: WindowState) => {
+			return <EditorWindow
+				key={`new-window-note-${windowState.windowId}`}
+				windowId={windowState.windowId}
+				newWindow={true}
+			/>;
+		});
+	}
+
 	public render() {
 		const navigatorStyle = {
 			width: this.props.size.width / this.props.zoomFactor,
@@ -163,6 +187,7 @@ class RootComponent extends React.Component<Props, any> {
 			Main: { screen: MainScreen },
 			OneDriveLogin: { screen: OneDriveLoginScreen, title: () => _('OneDrive Login') },
 			DropboxLogin: { screen: DropboxLoginScreen, title: () => _('Dropbox Login') },
+			JoplinCloudLogin: { screen: JoplinCloudLoginScreen, title: () => _('Joplin Cloud Login') },
 			Import: { screen: ImportScreen, title: () => _('Import') },
 			Config: { screen: ConfigScreen, title: () => _('Options') },
 			Resources: { screen: ResourceScreen, title: () => _('Note attachments') },
@@ -172,9 +197,12 @@ class RootComponent extends React.Component<Props, any> {
 		return (
 			<StyleSheetManager disableVendorPrefixes>
 				<ThemeProvider theme={theme}>
+					<StyleSheetContainer/>
 					<MenuBar/>
 					<GlobalStyle/>
-					<Navigator style={navigatorStyle} screens={screens} />
+					<WindowCommandsAndDialogs windowId={defaultWindowId} />
+					<Navigator style={navigatorStyle} screens={screens} className={`profile-${this.props.profileConfigCurrentProfileId}`} />
+					{this.renderSecondaryWindows()}
 					{this.renderModalMessage(this.modalDialogProps())}
 				</ThemeProvider>
 			</StyleSheetManager>
@@ -182,13 +210,16 @@ class RootComponent extends React.Component<Props, any> {
 	}
 }
 
-const mapStateToProps = (state: any) => {
+const mapStateToProps = (state: AppState) => {
 	return {
 		size: state.windowContentSize,
 		zoomFactor: state.settings.windowContentZoomFactor / 100,
 		appState: state.appState,
 		themeId: state.settings.theme,
 		needApiAuth: state.needApiAuth,
+		dialogs: state.dialogs,
+		profileConfigCurrentProfileId: state.profileConfig.currentProfileId,
+		secondaryWindowStates: stateUtils.secondaryWindowStates(state),
 	};
 };
 
@@ -196,11 +227,11 @@ const Root = connect(mapStateToProps)(RootComponent);
 
 const store = app().store();
 
-render(
+const root = createRoot(document.getElementById('react-root'));
+root.render(
 	<Provider store={store}>
 		<ErrorBoundary>
 			<Root />
 		</ErrorBoundary>
 	</Provider>,
-	document.getElementById('react-root')
 );
