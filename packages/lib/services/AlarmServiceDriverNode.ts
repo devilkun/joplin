@@ -1,10 +1,8 @@
-import eventManager from '../eventManager';
+import eventManager, { EventName } from '../eventManager';
 import { Notification } from '../models/Alarm';
 import shim from '../shim';
 import Setting from '../models/Setting';
-
 const notifier = require('node-notifier');
-const bridge = require('electron').remote.require('./bridge').default;
 
 interface Options {
 	appName: string;
@@ -13,42 +11,46 @@ interface Options {
 export default class AlarmServiceDriverNode {
 
 	private appName_: string;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	private notifications_: any = {};
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	private service_: any = null;
 
-	constructor(options: Options) {
+	public constructor(options: Options) {
 		// Note: appName is required to get the notification to work. It must be the same as the appId defined in package.json
 		// https://github.com/mikaelbr/node-notifier/issues/144#issuecomment-319324058
 		this.appName_ = options.appName;
 	}
 
-	setService(s: any) {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+	public setService(s: any) {
 		this.service_ = s;
 	}
 
-	logger() {
+	public logger() {
 		return this.service_.logger();
 	}
 
-	hasPersistentNotifications() {
+	public hasPersistentNotifications() {
 		return false;
 	}
 
-	notificationIsSet(id: number) {
+	public notificationIsSet(id: number) {
 		return id in this.notifications_;
 	}
 
-	clearNotification(id: number) {
+	public clearNotification(id: number) {
 		if (!this.notificationIsSet(id)) return;
 		shim.clearTimeout(this.notifications_[id].timeoutId);
 		delete this.notifications_[id];
 	}
 
 	private displayDefaultNotification(notification: Notification) {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		const o: any = {
 			appID: this.appName_,
 			title: notification.title,
-			icon: `${bridge().electronApp().buildDir()}/icons/512x512.png`,
+			icon: `${shim.electronBridge().electronApp().buildDir()}/icons/512x512.png`,
 		};
 		if ('body' in notification) o.message = notification.body;
 
@@ -59,6 +61,7 @@ export default class AlarmServiceDriverNode {
 
 		this.logger().info('AlarmServiceDriverNode::scheduleNotification: Triggering notification (default):', o);
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		notifier.notify(o, (error: any, response: any) => {
 			this.logger().info('AlarmServiceDriverNode::scheduleNotification: node-notifier response:', error, response);
 		});
@@ -76,8 +79,10 @@ export default class AlarmServiceDriverNode {
 		//
 		// In fact it's likely that we could use this on other platforms too
 		try {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 			const options: any = {
 				body: notification.body ? notification.body : '-',
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 				onerror: (error: any) => {
 					this.logger().error('AlarmServiceDriverNode::displayMacNotification', error);
 				},
@@ -128,7 +133,7 @@ export default class AlarmServiceDriverNode {
 		return 'granted';
 	}
 
-	async scheduleNotification(notification: Notification) {
+	public async scheduleNotification(notification: Notification) {
 		const now = Date.now();
 		const interval = notification.date.getTime() - now;
 		if (interval < 0) return;
@@ -175,11 +180,11 @@ export default class AlarmServiceDriverNode {
 
 				this.clearNotification(notification.id);
 
-				eventManager.emit('noteAlarmTrigger', { noteId: notification.noteId });
+				eventManager.emit(EventName.NoteAlarmTrigger, { noteId: notification.noteId });
 			}, interval);
 		}
 
-		this.notifications_[notification.id] = Object.assign({}, notification);
+		this.notifications_[notification.id] = { ...notification };
 		this.notifications_[notification.id].timeoutId = timeoutId;
 	}
 }
