@@ -1,15 +1,10 @@
-import { createUserAndSession, beforeAllDb, afterAllTests, beforeEachDb, models, expectThrow, createFolder, createItemTree3 } from '../utils/testing/testUtils';
-import { ChangeType, Item, Uuid } from '../db';
-import { msleep } from '../utils/time';
+import { createUserAndSession, beforeAllDb, afterAllTests, beforeEachDb, models, expectThrow, createFolder, createItemTree3, expectNotThrow, createNote, updateNote, deleteNote } from '../utils/testing/testUtils';
+import { ChangeType } from '../services/database/types';
+import { Day, msleep } from '../utils/time';
 import { ChangePagination } from './ChangeModel';
+import { SqliteMaxVariableNum } from '../db';
 
-async function makeTestItem(userId: Uuid, num: number): Promise<Item> {
-	return models().item().saveForUser(userId, {
-		name: `0000000000000000000000000000000${num}.md`,
-	});
-}
-
-describe('ChangeModel', function() {
+describe('ChangeModel', () => {
 
 	beforeAll(async () => {
 		await beforeAllDb('ChangeModel');
@@ -23,7 +18,7 @@ describe('ChangeModel', function() {
 		await beforeEachDb();
 	});
 
-	test('should track changes - create only', async function() {
+	test('should track changes - create only', async () => {
 		const { session, user } = await createUserAndSession(1, true);
 		const changeModel = models().change();
 
@@ -37,19 +32,19 @@ describe('ChangeModel', function() {
 		}
 	});
 
-	test('should track changes - create, then update', async function() {
+	test('should track changes - create, then update', async () => {
 		const { user } = await createUserAndSession(1, true);
 		const itemModel = models().item();
 		const changeModel = models().change();
 
-		await msleep(1); const item1 = await makeTestItem(user.id, 1); // [1] CREATE 1
-		await msleep(1); await itemModel.saveForUser(user.id, { id: item1.id, name: '0000000000000000000000000000001A.md' }); // [2] UPDATE 1a
-		await msleep(1); await itemModel.saveForUser(user.id, { id: item1.id, name: '0000000000000000000000000000001B.md' }); // [3] UPDATE 1b
-		await msleep(1); const item2 = await makeTestItem(user.id, 2); // [4] CREATE 2
-		await msleep(1); await itemModel.saveForUser(user.id, { id: item2.id, name: '0000000000000000000000000000002A.md' }); // [5] UPDATE 2a
+		await msleep(1); const item1 = await models().item().makeTestItem(user.id, 1); // [1] CREATE 1
+		await msleep(1); await itemModel.saveForUser(user.id, { id: item1.id, name: '0000000000000000000000000000001A.md', content: Buffer.from('') }); // [2] UPDATE 1a
+		await msleep(1); await itemModel.saveForUser(user.id, { id: item1.id, name: '0000000000000000000000000000001B.md', content: Buffer.from('') }); // [3] UPDATE 1b
+		await msleep(1); const item2 = await models().item().makeTestItem(user.id, 2); // [4] CREATE 2
+		await msleep(1); await itemModel.saveForUser(user.id, { id: item2.id, name: '0000000000000000000000000000002A.md', content: Buffer.from('') }); // [5] UPDATE 2a
 		await msleep(1); await itemModel.delete(item1.id); // [6] DELETE 1
-		await msleep(1); await itemModel.saveForUser(user.id, { id: item2.id, name: '0000000000000000000000000000002B.md' }); // [7] UPDATE 2b
-		await msleep(1); const item3 = await makeTestItem(user.id, 3); // [8] CREATE 3
+		await msleep(1); await itemModel.saveForUser(user.id, { id: item2.id, name: '0000000000000000000000000000002B.md', content: Buffer.from('') }); // [7] UPDATE 2b
+		await msleep(1); const item3 = await models().item().makeTestItem(user.id, 3); // [8] CREATE 3
 
 		// Check that the 8 changes were created
 		const allUncompressedChanges = await changeModel.all();
@@ -118,23 +113,24 @@ describe('ChangeModel', function() {
 		}
 	});
 
-	test('should throw an error if cursor is invalid', async function() {
+	test('should throw an error if cursor is invalid', async () => {
 		const { user } = await createUserAndSession(1, true);
 		const itemModel = models().item();
 		const changeModel = models().change();
 
 		let i = 1;
-		await msleep(1); const item1 = await makeTestItem(user.id, 1); // CREATE 1
-		await msleep(1); await itemModel.saveForUser(user.id, { id: item1.id, name: `test_mod${i++}` }); // UPDATE 1
+		await msleep(1); const item1 = await models().item().makeTestItem(user.id, 1); // CREATE 1
+		await msleep(1); await itemModel.saveForUser(user.id, { id: item1.id, name: `test_mod${i++}`, content: Buffer.from('') }); // UPDATE 1
 
 		await expectThrow(async () => changeModel.delta(user.id, { limit: 1, cursor: 'invalid' }), 'resyncRequired');
 	});
 
-	test('should tell that there are more changes even when current page is empty', async function() {
+	test('should tell that there are more changes even when current page is empty', async () => {
 		const { user: user1 } = await createUserAndSession(1);
 
 		const changeCount = 10;
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		const itemsToCreate: any[] = [];
 		for (let i = 0; i < changeCount / 2; i++) {
 			itemsToCreate.push({
@@ -162,6 +158,189 @@ describe('ChangeModel', function() {
 		const allFromIds3 = await models().change().allFromId(allFromIds2.cursor, changeCount / 2);
 		expect(allFromIds3.items.length).toBe(0);
 		expect(allFromIds3.has_more).toBe(false);
+	});
+
+	test('should not fail when retrieving many changes', async () => {
+		// Create many changes and verify that, by default, the SQL query that
+		// returns change doesn't fail. Before the max number of items was set
+		// to 1000 and it would fail with "SQLITE_ERROR: too many SQL variables"
+		// with SQLite. So now it's set to 999.
+
+		const { user } = await createUserAndSession(1, true);
+
+		await models().item().makeTestItems(user.id, 1010);
+
+		let changeCount = 0;
+		await expectNotThrow(async () => {
+			const changes = await models().change().allFromId('');
+			changeCount = changes.items.length;
+		});
+
+		expect(changeCount).toBe(SqliteMaxVariableNum);
+	});
+
+	test('should tell if there are more changes', async () => {
+		const { user } = await createUserAndSession(1, true);
+		await models().item().makeTestItems(user.id, 500);
+
+		const result = await models().change().delta(user.id, { limit: 100 });
+		expect(result.has_more).toBe(true);
+	});
+
+	test('should delete old changes', async () => {
+		// Create the following events:
+		//
+		// T1   2020-01-01    U1 Create
+		// T2   2020-01-10    U1 Update    U2 Create
+		// T3   2020-01-20    U1 Update
+		// T4   2020-01-30    U1 Update
+		// T5   2020-02-10                 U2 Update
+		// T6   2020-02-20                 U2 Update
+		//
+		// Use this to add days to a date:
+		//
+		// https://www.timeanddate.com/date/dateadd.html
+
+		const changeTtl = (180 + 1) * Day;
+
+		const { session: session1 } = await createUserAndSession(1);
+		const { session: session2 } = await createUserAndSession(2);
+
+		jest.useFakeTimers();
+
+		const t1 = new Date('2020-01-01').getTime();
+		jest.setSystemTime(t1);
+		const note1 = await createNote(session1.id, {});
+
+		const t2 = new Date('2020-01-10').getTime();
+		jest.setSystemTime(t2);
+		const note2 = await createNote(session2.id, {});
+		await updateNote(session1.id, { id: note1.jop_id });
+
+		const t3 = new Date('2020-01-20').getTime();
+		jest.setSystemTime(t3);
+		await updateNote(session1.id, { id: note1.jop_id });
+
+		const t4 = new Date('2020-01-30').getTime();
+		jest.setSystemTime(t4);
+		await updateNote(session1.id, { id: note1.jop_id });
+
+		const t5 = new Date('2020-02-10').getTime();
+		jest.setSystemTime(t5);
+		await updateNote(session2.id, { id: note2.jop_id });
+
+		const t6 = new Date('2020-02-20').getTime();
+		jest.setSystemTime(t6);
+		await updateNote(session2.id, { id: note2.jop_id });
+
+		expect(await models().change().count()).toBe(7);
+
+		// Shouldn't do anything initially because it only deletes old changes.
+		await models().change().compressOldChanges();
+		expect(await models().change().count()).toBe(7);
+
+		// 180 days after T4, it should delete all U1 updates events except for
+		// the last one
+		jest.setSystemTime(new Date(t4 + changeTtl).getTime());
+		await models().change().compressOldChanges();
+		expect(await models().change().count()).toBe(5);
+		{
+			const updateChange = (await models().change().all()).find(c => c.item_id === note1.id && c.type === ChangeType.Update);
+			expect(updateChange.created_time >= t4 && updateChange.created_time < t5).toBe(true);
+		}
+		// None of the note 2 changes should have been deleted because they've
+		// been made later
+		expect((await models().change().all()).filter(c => c.item_id === note2.id).length).toBe(3);
+
+		// Between T5 and T6, 90 days later - nothing should happen because
+		// there's only one note 2 change that is older than 90 days at this
+		// point.
+		jest.setSystemTime(new Date(t5 + changeTtl).getTime());
+		await models().change().compressOldChanges();
+		expect(await models().change().count()).toBe(5);
+
+		// After T6, more than 90 days later - now the change at T5 should be
+		// deleted, keeping only the change at T6.
+		jest.setSystemTime(new Date(t6 + changeTtl).getTime());
+		await models().change().compressOldChanges();
+		expect(await models().change().count()).toBe(4);
+		{
+			const updateChange = (await models().change().all()).find(c => c.item_id === note2.id && c.type === ChangeType.Update);
+			expect(updateChange.created_time >= t6).toBe(true);
+		}
+
+		jest.useRealTimers();
+	});
+
+	test('should return whole item when doing a delta call', async () => {
+		const { user, session } = await createUserAndSession(1, true);
+
+		await createItemTree3(user.id, '', '', [
+			{
+				id: '000000000000000000000000000000F1',
+				title: 'Folder 1',
+				children: [
+					{
+						id: '00000000000000000000000000000001',
+						title: 'Note 1',
+					},
+					{
+						id: '00000000000000000000000000000002',
+						title: 'Note 2',
+					},
+				],
+			},
+		]);
+
+		let cursor = '';
+
+		{
+			const result = await models().change().delta(user.id);
+			cursor = result.cursor;
+			const titles = result.items.map(it => it.jopItem.title).sort();
+			expect(titles).toEqual(['Folder 1', 'Note 1', 'Note 2']);
+		}
+
+		await msleep(1);
+
+		await updateNote(session.id, {
+			id: '00000000000000000000000000000001',
+			title: 'new title',
+		});
+
+		{
+			const result = await models().change().delta(user.id, { cursor });
+			cursor = result.cursor;
+			expect(result.items.length).toBe(1);
+			expect(result.items[0].jopItem.title).toBe('new title');
+		}
+
+		await msleep(1);
+
+		await deleteNote(user.id, '00000000000000000000000000000002');
+
+		{
+			const result = await models().change().delta(user.id, { cursor });
+			expect(result.items.length).toBe(1);
+			expect(result.items[0].jopItem).toBe(null);
+		}
+	});
+
+	test('should not return the whole item if the option is disabled', async () => {
+		const { user } = await createUserAndSession(1, true);
+
+		const changeModel = await models().change();
+		changeModel.deltaIncludesItems_ = false;
+
+		await createItemTree3(user.id, '', '', [
+			{
+				id: '000000000000000000000000000000F1',
+				title: 'Folder 1',
+			},
+		]);
+
+		const result = await changeModel.delta(user.id);
+		expect('jopItem' in result.items[0]).toBe(false);
 	});
 
 });

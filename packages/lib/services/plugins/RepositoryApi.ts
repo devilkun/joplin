@@ -1,8 +1,10 @@
-import Logger from '../../Logger';
+import Logger from '@joplin/utils/Logger';
 import shim from '../../shim';
 import { PluginManifest } from './utils/types';
 const md5 = require('md5');
-const compareVersions = require('compare-versions');
+import { compareVersions } from 'compare-versions';
+import isCompatible from './utils/isCompatible';
+import { AppType } from '../../models/Setting';
 
 const logger = Logger.create('RepositoryApi');
 
@@ -16,6 +18,46 @@ interface Release {
 	assets: ReleaseAsset[];
 }
 
+export enum InstallMode {
+	Restricted,
+	Default,
+}
+
+export interface AppInfo {
+	version: string;
+	type: AppType;
+}
+
+const findWorkingGitHubUrl = async (defaultContentUrl: string): Promise<string> => {
+	// From: https://github.com/laurent22/joplin/issues/5161#issuecomment-921642721
+
+	const mirrorUrls = [
+		defaultContentUrl,
+		'https://cdn.staticaly.com/gh/joplin/plugins/master',
+		'https://ghproxy.com/https://raw.githubusercontent.com/joplin/plugins/master',
+		'https://cdn.jsdelivr.net/gh/joplin/plugins@master',
+		'https://raw.fastgit.org/joplin/plugins/master',
+	];
+
+	for (const mirrorUrl of mirrorUrls) {
+		try {
+			// We try to fetch .gitignore, which is smaller than the whole manifest
+			await shim.fetch(`${mirrorUrl}/.gitignore`);
+		} catch (error) {
+			logger.info(`findWorkingMirror: Could not connect to ${mirrorUrl}:`, error);
+			continue;
+		}
+
+		logger.info(`findWorkingMirror: Using: ${mirrorUrl}`);
+
+		return mirrorUrl;
+	}
+
+	logger.info('findWorkingMirror: Could not find any working GitHub URL');
+
+	return defaultContentUrl;
+};
+
 export default class RepositoryApi {
 
 	// As a base URL, this class can support either a remote repository or a
@@ -27,17 +69,49 @@ export default class RepositoryApi {
 	// Later on, other repo types could be supported.
 	private baseUrl_: string;
 	private tempDir_: string;
+	private readonly installMode_: InstallMode;
+	private readonly appType_: AppType;
+	private readonly appVersion_: string;
 	private release_: Release = null;
 	private manifests_: PluginManifest[] = null;
+	private githubApiUrl_: string;
+	private contentBaseUrl_: string;
+	private isUsingDefaultContentUrl_ = true;
+	private lastInitializedTime_ = 0;
 
-	public constructor(baseUrl: string, tempDir: string) {
+	public constructor(baseUrl: string, tempDir: string, appInfo: AppInfo, installMode: InstallMode) {
+		this.installMode_ = installMode;
+		this.appType_ = appInfo.type;
+		this.appVersion_ = appInfo.version;
 		this.baseUrl_ = baseUrl;
 		this.tempDir_ = tempDir;
 	}
 
+	public static ofDefaultJoplinRepo(tempDirPath: string, appInfo: AppInfo, installMode: InstallMode) {
+		return new RepositoryApi('https://github.com/joplin/plugins', tempDirPath, appInfo, installMode);
+	}
+
 	public async initialize() {
+		// https://github.com/joplin/plugins
+		// https://api.github.com/repos/joplin/plugins/releases
+		this.githubApiUrl_ = this.baseUrl_.replace(/^(https:\/\/)(github\.com\/)(.*)$/, '$1api.$2repos/$3');
+		const defaultContentBaseUrl = this.isLocalRepo ? this.baseUrl_ : `${this.baseUrl_.replace(/github\.com/, 'raw.githubusercontent.com')}/master`;
+
+		const canUseMirrors = this.installMode_ === InstallMode.Default && !this.isLocalRepo;
+		this.contentBaseUrl_ = canUseMirrors ? await findWorkingGitHubUrl(defaultContentBaseUrl) : defaultContentBaseUrl;
+		this.isUsingDefaultContentUrl_ = this.contentBaseUrl_ === defaultContentBaseUrl;
+
 		await this.loadManifests();
 		await this.loadRelease();
+
+		this.lastInitializedTime_ = Date.now();
+	}
+
+	public async reinitialize() {
+		// Refresh at most once per minute
+		if (Date.now() - this.lastInitializedTime_ > 5 * 60000) {
+			await this.initialize();
+		}
 	}
 
 	private async loadManifests() {
@@ -45,18 +119,33 @@ export default class RepositoryApi {
 		try {
 			const manifests = JSON.parse(manifestsText);
 			if (!manifests) throw new Error('Invalid or missing JSON');
+
 			this.manifests_ = Object.keys(manifests).map(id => {
-				return manifests[id];
+				const m: PluginManifest = manifests[id];
+				// If we don't control the repository, we can't recommend
+				// anything on it since it could have been modified.
+				if (!this.isUsingDefaultContentUrl) m._recommended = false;
+				return m;
 			});
 		} catch (error) {
 			throw new Error(`Could not parse JSON: ${error.message}`);
 		}
 	}
 
+	public get isUsingDefaultContentUrl() {
+		return this.isUsingDefaultContentUrl_;
+	}
+
 	private get githubApiUrl(): string {
-		// https://github.com/joplin/plugins
-		// https://api.github.com/repos/joplin/plugins/releases
-		return this.baseUrl_.replace(/^(https:\/\/)(github\.com\/)(.*)$/, '$1api.$2repos/$3');
+		return this.githubApiUrl_;
+	}
+
+	public get contentBaseUrl(): string {
+		if (this.isLocalRepo) {
+			return this.baseUrl_;
+		} else {
+			return this.contentBaseUrl_;
+		}
 	}
 
 	private async loadRelease() {
@@ -65,7 +154,7 @@ export default class RepositoryApi {
 		if (this.isLocalRepo) return;
 
 		try {
-			const response = await fetch(`${this.githubApiUrl}/releases`);
+			const response = await shim.fetch(`${this.githubApiUrl}/releases`);
 			const releases = await response.json();
 			if (!releases.length) throw new Error('No release was found');
 			this.release_ = releases[0];
@@ -78,16 +167,9 @@ export default class RepositoryApi {
 		return this.baseUrl_.indexOf('http') !== 0;
 	}
 
-	private get contentBaseUrl(): string {
-		if (this.isLocalRepo) {
-			return this.baseUrl_;
-		} else {
-			return `${this.baseUrl_.replace(/github\.com/, 'raw.githubusercontent.com')}/master`;
-		}
-	}
-
 	private assetFileUrl(pluginId: string): string {
-		if (this.release_) {
+		// On web, downloading from a release is blocked by CORS.
+		if (this.release_ && shim.mobilePlatform() !== 'web') {
 			const asset = this.release_.assets.find(asset => {
 				const s = asset.name.split('@');
 				s.pop();
@@ -117,6 +199,10 @@ export default class RepositoryApi {
 		}
 	}
 
+	private isBlockedByInstallMode(manifest: PluginManifest) {
+		return this.installMode_ === InstallMode.Restricted && manifest._recommended !== true;
+	}
+
 	public async search(query: string): Promise<PluginManifest[]> {
 		query = query.toLowerCase().trim();
 
@@ -124,7 +210,12 @@ export default class RepositoryApi {
 		const output: PluginManifest[] = [];
 
 		for (const manifest of manifests) {
+			if (this.isBlockedByInstallMode(manifest)) {
+				continue;
+			}
+
 			for (const field of ['name', 'description']) {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 				const v = (manifest as any)[field];
 				if (!v) continue;
 
@@ -135,6 +226,16 @@ export default class RepositoryApi {
 			}
 		}
 
+		output.sort((m1, m2) => {
+			const m1Compatible = isCompatible(this.appVersion_, this.appType_, m1);
+			const m2Compatible = isCompatible(this.appVersion_, this.appType_, m2);
+			if (m1Compatible && !m2Compatible) return -1;
+			if (!m1Compatible && m2Compatible) return 1;
+			if (m1._recommended && !m2._recommended) return -1;
+			if (!m1._recommended && m2._recommended) return +1;
+			return m1.name.toLowerCase() < m2.name.toLowerCase() ? -1 : +1;
+		});
+
 		return output;
 	}
 
@@ -144,6 +245,7 @@ export default class RepositoryApi {
 		const manifests = await this.manifests();
 		const manifest = manifests.find(m => m.id === pluginId);
 		if (!manifest) throw new Error(`No manifest for plugin ID "${pluginId}"`);
+		if (this.isBlockedByInstallMode(manifest)) throw new Error(`Plugin is blocked by intstallation policy. ID "${pluginId}"`);
 
 		const fileUrl = this.assetFileUrl(manifest.id); // this.repoFileUrl(`plugins/${manifest.id}/plugin.jpl`);
 		const hash = md5(Date.now() + Math.random());
@@ -181,7 +283,9 @@ export default class RepositoryApi {
 	public async pluginCanBeUpdated(pluginId: string, installedVersion: string): Promise<boolean> {
 		const manifest = (await this.manifests()).find(m => m.id === pluginId);
 		if (!manifest) return false;
-		return compareVersions(installedVersion, manifest.version) < 0;
+
+		const supportsCurrentAppVersion = compareVersions(installedVersion, manifest.version) < 0 && isCompatible(this.appVersion_, this.appType_, manifest);
+		return supportsCurrentAppVersion && !this.isBlockedByInstallMode(manifest);
 	}
 
 }

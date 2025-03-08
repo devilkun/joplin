@@ -1,11 +1,13 @@
 import shim from '../../../shim';
 import MigrationHandler from '../MigrationHandler';
-const { useEffect, useState } = shim.react();
 import Setting from '../../../models/Setting';
 import { reg } from '../../../registry';
+import { appTypeToLockType } from '../LockHandler';
+const { useEffect, useState } = shim.react();
 
 export interface SyncTargetUpgradeResult {
 	done: boolean;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	error: any;
 }
 
@@ -26,9 +28,10 @@ export default function useSyncTargetUpgrade(): SyncTargetUpgradeResult {
 			reg.logger().info('useSyncTargetUpgrade: Create migration handler...');
 			const migrationHandler = new MigrationHandler(
 				synchronizer.api(),
+				reg.db(),
 				synchronizer.lockHandler(),
-				Setting.value('appType'),
-				Setting.value('clientId')
+				appTypeToLockType(Setting.value('appType')),
+				Setting.value('clientId'),
 			);
 
 			reg.logger().info('useSyncTargetUpgrade: Start upgrade...');
@@ -50,7 +53,7 @@ export default function useSyncTargetUpgrade(): SyncTargetUpgradeResult {
 		});
 	}
 
-	useEffect(function() {
+	useEffect(() => {
 		void upgradeSyncTarget();
 	}, []);
 

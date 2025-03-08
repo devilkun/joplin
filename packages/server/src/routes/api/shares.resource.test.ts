@@ -3,7 +3,7 @@ import { afterAllTests, beforeAllDb, beforeEachDb } from '../../utils/testing/te
 // What resources should be shared is now handled on the client so these tests
 // probably aren't necessary anymore.
 
-describe('shares.resource', function() {
+describe('shares.resource', () => {
 
 	beforeAll(async () => {
 		await beforeAllDb('shares.resource');
@@ -17,7 +17,7 @@ describe('shares.resource', function() {
 		await beforeEachDb();
 	});
 
-	test('should pass', async function() {
+	test('should pass', async () => {
 		expect(true).toBe(true);
 	});
 
@@ -49,7 +49,7 @@ describe('shares.resource', function() {
 
 });
 
-// import { ShareType } from '../../db';
+// import { ShareType } from '../../services/database/types';
 // import { beforeAllDb, afterAllTests, beforeEachDb, createUserAndSession, models, createResource, createItemTree2, updateNote, createNote } from '../../utils/testing/testUtils';
 // import { getApi } from '../../utils/testing/apiUtils';
 // import { shareWithUserAndAccept } from '../../utils/testing/shareApiUtils';

@@ -1,13 +1,15 @@
-import { Notification, NotificationLevel, Uuid } from '../db';
+import { Notification, NotificationLevel, Uuid } from '../services/database/types';
 import { ErrorUnprocessableEntity } from '../utils/errors';
+import { uuidgen } from '@joplin/lib/uuid';
 import BaseModel, { ValidateOptions } from './BaseModel';
 
 export enum NotificationKey {
-	ConfirmEmail = 'confirmEmail',
+	Any = 'any',
+	// ConfirmEmail = 'confirmEmail',
 	PasswordSet = 'passwordSet',
 	EmailConfirmed = 'emailConfirmed',
 	ChangeAdminPassword = 'change_admin_password',
-	UsingSqliteInProd = 'using_sqlite_in_prod',
+	// UsingSqliteInProd = 'using_sqlite_in_prod',
 	UpgradedToPro = 'upgraded_to_pro',
 }
 
@@ -28,14 +30,11 @@ export default class NotificationModel extends BaseModel<Notification> {
 	}
 
 	public async add(userId: Uuid, key: NotificationKey, level: NotificationLevel = null, message: string = null): Promise<Notification> {
-		const n: Notification = await this.loadByKey(userId, key);
-		if (n) return n;
-
 		const notificationTypes: Record<string, NotificationType> = {
-			[NotificationKey.ConfirmEmail]: {
-				level: NotificationLevel.Normal,
-				message: `Welcome to ${this.appName}! An email has been sent to you containing an activation link to complete your registration.`,
-			},
+			// [NotificationKey.ConfirmEmail]: {
+			// 	level: NotificationLevel.Normal,
+			// 	message: `Welcome to ${this.appName}! An email has been sent to you containing an activation link to complete your registration. Make sure you click it to secure your account and keep access to it.`,
+			// },
 			[NotificationKey.EmailConfirmed]: {
 				level: NotificationLevel.Normal,
 				message: 'Your email has been confirmed',
@@ -44,15 +43,27 @@ export default class NotificationModel extends BaseModel<Notification> {
 				level: NotificationLevel.Normal,
 				message: `Welcome to ${this.appName}! Your password has been set successfully.`,
 			},
-			[NotificationKey.UsingSqliteInProd]: {
-				level: NotificationLevel.Important,
-				message: 'The server is currently using SQLite3 as a database. It is not recommended in production as it is slow and can cause locking issues. Please see the README for information on how to change it.',
-			},
+			// [NotificationKey.UsingSqliteInProd]: {
+			// 	level: NotificationLevel.Important,
+			// 	message: 'The server is currently using SQLite3 as a database. It is not recommended in production as it is slow and can cause locking issues. Please see the README for information on how to change it.',
+			// },
 			[NotificationKey.UpgradedToPro]: {
 				level: NotificationLevel.Normal,
 				message: 'Thank you! Your account has been successfully upgraded to Pro.',
 			},
+			[NotificationKey.Any]: {
+				level: NotificationLevel.Normal,
+				message: '',
+			},
 		};
+
+		const n: Notification = await this.loadByKey(userId, key);
+
+		if (n) {
+			if (!n.read) return n;
+			await this.save({ id: n.id, read: 0 });
+			return { ...n, read: 0 };
+		}
 
 		const type = notificationTypes[key];
 
@@ -72,15 +83,26 @@ export default class NotificationModel extends BaseModel<Notification> {
 			}
 		}
 
-		return this.save({ key, message, level, owner_id: userId });
+		const actualKey = key === NotificationKey.Any ? `any_${uuidgen()}` : key;
+
+		return this.save({ key: actualKey, message, level, owner_id: userId });
 	}
 
-	public async markAsRead(userId: Uuid, key: NotificationKey): Promise<void> {
+	public async addInfo(userId: Uuid, message: string) {
+		return this.add(userId, NotificationKey.Any, NotificationLevel.Normal, message);
+	}
+
+	public async addError(userId: Uuid, error: string | Error) {
+		const message = typeof error === 'string' ? error : error.message;
+		return this.add(userId, NotificationKey.Any, NotificationLevel.Error, message);
+	}
+
+	public async setRead(userId: Uuid, key: NotificationKey, read = true): Promise<void> {
 		const n = await this.loadByKey(userId, key);
 		if (!n) return;
 
 		await this.db(this.tableName)
-			.update({ read: 1 })
+			.update({ read: read ? 1 : 0 })
 			.where('key', '=', key)
 			.andWhere('owner_id', '=', userId);
 	}
@@ -89,6 +111,15 @@ export default class NotificationModel extends BaseModel<Notification> {
 		return this.db(this.tableName)
 			.select(this.defaultFields)
 			.where('key', '=', key)
+			.andWhere('owner_id', '=', userId)
+			.first();
+	}
+
+	public loadUnreadByKey(userId: Uuid, key: NotificationKey): Promise<Notification> {
+		return this.db(this.tableName)
+			.select(this.defaultFields)
+			.where('key', '=', key)
+			.andWhere('read', '=', 0)
 			.andWhere('owner_id', '=', userId)
 			.first();
 	}

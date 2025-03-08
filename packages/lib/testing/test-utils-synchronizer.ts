@@ -1,8 +1,9 @@
 import BaseModel from '../BaseModel';
-const { fileApi } = require('../testing/../testing/test-utils.js');
+import { fileApi } from '../testing/../testing/test-utils';
 import Folder from '../models/Folder';
 import Note from '../models/Note';
 import BaseItem from '../models/BaseItem';
+import { FolderEntity, NoteEntity } from '../services/database/types';
 
 export async function allNotesFolders() {
 	const folders = await Folder.all();
@@ -12,7 +13,7 @@ export async function allNotesFolders() {
 
 async function remoteItemsByTypes(types: number[]) {
 	const list = await fileApi().list('', { includeDirs: false, syncItemsOnly: true });
-	if (list.has_more) throw new Error('Not implemented!!!');
+	if (list.hasMore) throw new Error('Not implemented!!!');
 	const files = list.items;
 
 	const output = [];
@@ -25,7 +26,7 @@ async function remoteItemsByTypes(types: number[]) {
 	return output;
 }
 
-export async function remoteNotesAndFolders() {
+export async function remoteNotesAndFolders(): Promise<(NoteEntity | FolderEntity)[]> {
 	return remoteItemsByTypes([BaseModel.TYPE_NOTE, BaseModel.TYPE_FOLDER]);
 }
 
@@ -37,6 +38,7 @@ export async function remoteResources() {
 	return remoteItemsByTypes([BaseModel.TYPE_RESOURCE]);
 }
 
+// eslint-disable-next-line @typescript-eslint/ban-types, @typescript-eslint/no-explicit-any -- Old code before rule was applied, Old code before rule was applied
 export async function localNotesFoldersSameAsRemote(locals: any[], expect: Function) {
 	let error = null;
 	try {
@@ -53,7 +55,7 @@ export async function localNotesFoldersSameAsRemote(locals: any[], expect: Funct
 
 			let remoteContent = await fileApi().get(path);
 
-			remoteContent = dbItem.type_ == BaseModel.TYPE_NOTE ? await Note.unserialize(remoteContent) : await Folder.unserialize(remoteContent);
+			remoteContent = dbItem.type_ === BaseModel.TYPE_NOTE ? await Note.unserialize(remoteContent) : await Folder.unserialize(remoteContent);
 			expect(remoteContent.title).toBe(dbItem.title);
 		}
 	} catch (e) {

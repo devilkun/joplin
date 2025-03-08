@@ -1,8 +1,8 @@
 import { createUserAndSession, beforeAllDb, afterAllTests, beforeEachDb, models, expectThrow } from '../utils/testing/testUtils';
-import { Notification, NotificationLevel } from '../db';
+import { Notification, NotificationLevel } from '../services/database/types';
 import { NotificationKey } from './NotificationModel';
 
-describe('NotificationModel', function() {
+describe('NotificationModel', () => {
 
 	beforeAll(async () => {
 		await beforeAllDb('NotificationModel');
@@ -16,35 +16,35 @@ describe('NotificationModel', function() {
 		await beforeEachDb();
 	});
 
-	test('should require a user to create the notification', async function() {
-		await expectThrow(async () => models().notification().add('', NotificationKey.ConfirmEmail, NotificationLevel.Normal, NotificationKey.ConfirmEmail));
+	test('should require a user to create the notification', async () => {
+		await expectThrow(async () => models().notification().add('', NotificationKey.EmailConfirmed, NotificationLevel.Normal, NotificationKey.EmailConfirmed));
 	});
 
-	test('should create a notification', async function() {
+	test('should create a notification', async () => {
 		const { user } = await createUserAndSession(1, true);
 		const model = models().notification();
-		await model.add(user.id, NotificationKey.ConfirmEmail, NotificationLevel.Important, 'testing');
-		const n: Notification = await model.loadByKey(user.id, NotificationKey.ConfirmEmail);
-		expect(n.key).toBe(NotificationKey.ConfirmEmail);
+		await model.add(user.id, NotificationKey.EmailConfirmed, NotificationLevel.Important, 'testing');
+		const n: Notification = await model.loadByKey(user.id, NotificationKey.EmailConfirmed);
+		expect(n.key).toBe(NotificationKey.EmailConfirmed);
 		expect(n.message).toBe('testing');
 		expect(n.level).toBe(NotificationLevel.Important);
 	});
 
-	test('should create only one notification per key', async function() {
+	test('should create only one notification per key', async () => {
 		const { user } = await createUserAndSession(1, true);
 		const model = models().notification();
-		await model.add(user.id, NotificationKey.ConfirmEmail, NotificationLevel.Important, 'testing');
-		await model.add(user.id, NotificationKey.ConfirmEmail, NotificationLevel.Important, 'testing');
+		await model.add(user.id, NotificationKey.EmailConfirmed, NotificationLevel.Important, 'testing');
+		await model.add(user.id, NotificationKey.EmailConfirmed, NotificationLevel.Important, 'testing');
 		expect((await model.all()).length).toBe(1);
 	});
 
-	test('should mark a notification as read', async function() {
+	test('should mark a notification as read', async () => {
 		const { user } = await createUserAndSession(1, true);
 		const model = models().notification();
-		await model.add(user.id, NotificationKey.ConfirmEmail, NotificationLevel.Important, 'testing');
-		expect((await model.loadByKey(user.id, NotificationKey.ConfirmEmail)).read).toBe(0);
-		await model.markAsRead(user.id, NotificationKey.ConfirmEmail);
-		expect((await model.loadByKey(user.id, NotificationKey.ConfirmEmail)).read).toBe(1);
+		await model.add(user.id, NotificationKey.EmailConfirmed, NotificationLevel.Important, 'testing');
+		expect((await model.loadByKey(user.id, NotificationKey.EmailConfirmed)).read).toBe(0);
+		await model.setRead(user.id, NotificationKey.EmailConfirmed);
+		expect((await model.loadByKey(user.id, NotificationKey.EmailConfirmed)).read).toBe(1);
 	});
 
 });

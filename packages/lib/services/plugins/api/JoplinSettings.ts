@@ -1,7 +1,68 @@
-import eventManager from '../../../eventManager';
+/* eslint-disable multiline-comment-style */
+
+import eventManager, { EventName } from '../../../eventManager';
 import Setting, { SettingItem as InternalSettingItem, SettingSectionSource } from '../../../models/Setting';
 import Plugin from '../Plugin';
+import getPluginNamespacedSettingKey from '../utils/getPluginNamespacedSettingKey';
+import getPluginSettingKeyPrefix from '../utils/getPluginSettingKeyPrefix';
+import makeListener from '../utils/makeListener';
 import { SettingItem, SettingSection } from './types';
+
+// That's all the plugin as of 27/08/21 - any new plugin after that will not be
+// able to use the registerSetting API. Fixes in particular all the ambrt
+// plugins. Some of them don't need this hack but it's easier that way.
+const registerSettingAllowedPluginIds: string[] = [
+	'b53da1f6-868c-468d-b60c-2897a27166ac',
+	'com.andrejilderda.macOSTheme',
+	'com.export-to-ssg.aman-d-1-n-only',
+	'com.github.BeatLink.joplin-plugin-untagged',
+	'com.github.joplin.kanban',
+	'com.github.marc0l92.joplin-plugin-jira-issue',
+	'com.github.uphy.PlantUmlPlugin',
+	'com.gitlab.BeatLink.joplin-plugin-repeating-todos',
+	'com.joplin_plugin.nlr',
+	'com.lki.homenote',
+	'com.plugin.randomNotePlugin',
+	'com.shantanugoel.JoplinCMLineNumbersPlugin',
+	'com.whatever.inline-tags',
+	'com.whatever.quick-links',
+	'com.xUser5000.bibtex',
+	'cx.evermeet.tessus.menu-shortcut-toolbar',
+	'fd117a99-b165-4824-893c-5825439a842d',
+	'io.github.jackgruber.backup',
+	'io.github.jackgruber.combine-notes',
+	'io.github.jackgruber.copytags',
+	'io.github.jackgruber.hotfolder',
+	'io.github.jackgruber.note-overview',
+	'io.treymo.LinkGraph',
+	'joplin-insert-date',
+	'joplin-plugin-conflict-resolution',
+	'joplin.plugin.ambrt.backlinksToNote',
+	'joplin.plugin.ambrt.convertToNewNote',
+	'joplin.plugin.ambrt.copyNoteLink',
+	'joplin.plugin.ambrt.embedSearch',
+	'joplin.plugin.ambrt.fold-cm',
+	'joplin.plugin.ambrt.goToItem',
+	'joplin.plugin.anki-sync',
+	'joplin.plugin.benji.favorites',
+	'joplin.plugin.benji.persistentLayout',
+	'joplin.plugin.benji.quick-move',
+	'joplin.plugin.forcewake.tags-generator',
+	'joplin.plugin.note.tabs',
+	'joplin.plugin.quick.html.tags',
+	'joplin.plugin.spoiler.cards',
+	'joplin.plugin.templates',
+	'net.rmusin.joplin-table-formatter',
+	'net.rmusin.resource-search',
+	'org.joplinapp.plugins.AbcSheetMusic',
+	'org.joplinapp.plugins.admonition',
+	'org.joplinapp.plugins.ToggleSidebars',
+	'osw.joplin.markdowncalc',
+	'outline',
+	'plugin.azamahJunior.note-statistics',
+	'plugin.calebjohn.MathMode',
+	'plugin.calebjohn.rich-markdown',
+];
 
 export interface ChangeEvent {
 	/**
@@ -28,16 +89,6 @@ export default class JoplinSettings {
 		this.plugin_ = plugin;
 	}
 
-	private get keyPrefix(): string {
-		return `plugin-${this.plugin_.id}.`;
-	}
-
-	// Ensures that the plugin settings and sections are within their own namespace, to prevent them from
-	// overwriting other plugin settings or the default settings.
-	private namespacedKey(key: string): string {
-		return `${this.keyPrefix}${key}`;
-	}
-
 	/**
 	 * Registers new settings.
 	 * Note that registering a setting item is dynamic and will be gone next time Joplin starts.
@@ -56,8 +107,9 @@ export default class JoplinSettings {
 				description: (_appType: string) => setting.description,
 			};
 
+			if ('subType' in setting) internalSettingItem.subType = setting.subType;
 			if ('isEnum' in setting) internalSettingItem.isEnum = setting.isEnum;
-			if ('section' in setting) internalSettingItem.section = this.namespacedKey(setting.section);
+			if ('section' in setting) internalSettingItem.section = getPluginNamespacedSettingKey(this.plugin_.id, setting.section);
 			if ('options' in setting) internalSettingItem.options = () => setting.options;
 			if ('appTypes' in setting) internalSettingItem.appTypes = setting.appTypes;
 			if ('secure' in setting) internalSettingItem.secure = setting.secure;
@@ -67,7 +119,7 @@ export default class JoplinSettings {
 			if ('step' in setting) internalSettingItem.step = setting.step;
 			if ('storage' in setting) internalSettingItem.storage = setting.storage;
 
-			await Setting.registerSetting(this.namespacedKey(key), internalSettingItem);
+			await Setting.registerSetting(getPluginNamespacedSettingKey(this.plugin_.id, key), internalSettingItem);
 		}
 	}
 
@@ -77,7 +129,13 @@ export default class JoplinSettings {
 	 * Registers a new setting.
 	 */
 	public async registerSetting(key: string, settingItem: SettingItem) {
-		this.plugin_.deprecationNotice('1.8', 'joplin.settings.registerSetting() is deprecated in favour of joplin.settings.registerSettings()', true);
+		// It's a warning for older plugins and an error for new ones.
+		this.plugin_.deprecationNotice(
+			'1.8',
+			'joplin.settings.registerSetting() is deprecated in favour of joplin.settings.registerSettings()',
+			!registerSettingAllowedPluginIds.includes(this.plugin_.id),
+		);
+
 		await this.registerSettings({ [key]: settingItem });
 	}
 
@@ -85,21 +143,37 @@ export default class JoplinSettings {
 	 * Registers a new setting section. Like for registerSetting, it is dynamic and needs to be done every time the plugin starts.
 	 */
 	public async registerSection(name: string, section: SettingSection) {
-		return Setting.registerSection(this.namespacedKey(name), SettingSectionSource.Plugin, section);
+		return Setting.registerSection(getPluginNamespacedSettingKey(this.plugin_.id, name), SettingSectionSource.Plugin, section);
 	}
 
 	/**
+	 * Gets setting values (only applies to setting you registered from your plugin)
+	 */
+	public async values(keys: string[] | string): Promise<Record<string, unknown>> {
+		if (typeof keys === 'string') keys = [keys];
+		const output: Record<string, unknown> = {};
+		for (const key of keys) {
+			output[key] = Setting.value(getPluginNamespacedSettingKey(this.plugin_.id, key));
+		}
+		return output;
+	}
+
+	/**
+	 * @deprecated Use joplin.settings.values()
+	 *
 	 * Gets a setting value (only applies to setting you registered from your plugin)
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	public async value(key: string): Promise<any> {
-		return Setting.value(this.namespacedKey(key));
+		return Setting.value(getPluginNamespacedSettingKey(this.plugin_.id, key));
 	}
 
 	/**
 	 * Sets a setting value (only applies to setting you registered from your plugin)
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	public async setValue(key: string, value: any) {
-		return Setting.setValue(this.namespacedKey(key), value);
+		return Setting.setValue(getPluginNamespacedSettingKey(this.plugin_.id, key), value);
 	}
 
 	/**
@@ -109,6 +183,7 @@ export default class JoplinSettings {
 	 *
 	 * https://github.com/laurent22/joplin/blob/dev/packages/lib/models/Setting.ts#L142
 	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	public async globalValue(key: string): Promise<any> {
 		return Setting.value(key);
 	}
@@ -120,12 +195,13 @@ export default class JoplinSettings {
 	 */
 	public async onChange(handler: ChangeHandler): Promise<void> {
 		// Filter out keys that are not related to this plugin
-		eventManager.on('settingsChange', (event: ChangeEvent) => {
+		const listener = (event: ChangeEvent) => {
 			const keys = event.keys
-				.filter(k => k.indexOf(this.keyPrefix) === 0)
-				.map(k => k.substr(this.keyPrefix.length));
+				.filter(k => k.indexOf(getPluginSettingKeyPrefix(this.plugin_.id)) === 0)
+				.map(k => k.substr(getPluginSettingKeyPrefix(this.plugin_.id).length));
 			if (!keys.length) return;
 			handler({ keys });
-		});
+		};
+		makeListener(this.plugin_, eventManager, EventName.SettingsChange, listener);
 	}
 }

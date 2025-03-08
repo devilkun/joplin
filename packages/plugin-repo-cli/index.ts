@@ -1,28 +1,23 @@
 #!/usr/bin/env node
 
+/* eslint-disable no-console */
+
+require('source-map-support').install();
+
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as process from 'process';
-import validatePluginId from '@joplin/lib/services/plugins/utils/validatePluginId';
-import { execCommand2, resolveRelativePathWithinDir, gitPullTry, gitRepoCleanTry, gitRepoClean } from '@joplin/tools/tool-utils.js';
-import checkIfPluginCanBeAdded from './lib/checkIfPluginCanBeAdded';
+import { resolveRelativePathWithinDir, gitPullTry, gitRepoCleanTry, gitRepoClean } from '@joplin/tools/tool-utils.js';
 import updateReadme from './lib/updateReadme';
 import { NpmPackage } from './lib/types';
 import gitCompareUrl from './lib/gitCompareUrl';
 import commandUpdateRelease from './commands/updateRelease';
+import { isJoplinPluginPackage, readJsonFile } from './lib/utils';
+import { applyManifestOverrides, getObsoleteManifests, getSupersededPackages, readManifestOverrides } from './lib/overrideUtils';
+import { execCommand } from '@joplin/utils';
+import validateUntrustedManifest from './lib/validateUntrustedManifest';
 
-function stripOffPackageOrg(name: string): string {
-	const n = name.split('/');
-	if (n[0][0] === '@') n.splice(0, 1);
-	return n.join('/');
-}
-
-function isJoplinPluginPackage(pack: any): boolean {
-	if (!pack.keywords || !pack.keywords.includes('joplin-plugin')) return false;
-	if (stripOffPackageOrg(pack.name).indexOf('joplin-plugin') !== 0) return false;
-	return true;
-}
-
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 function pluginInfoFromSearchResults(results: any[]): NpmPackage[] {
 	const output: NpmPackage[] = [];
 
@@ -44,45 +39,38 @@ async function checkPluginRepository(dirPath: string, dryRun: boolean) {
 	if (!(await fs.pathExists(`${dirPath}/.git`))) throw new Error(`Directory is not a Git repository: ${dirPath}`);
 
 	const previousDir = chdir(dirPath);
-	await gitRepoCleanTry();
-	if (!dryRun) await gitPullTry();
+	if (!dryRun) {
+		await gitRepoCleanTry();
+		await gitPullTry();
+	}
 	chdir(previousDir);
 }
 
-async function readJsonFile(manifestPath: string, defaultValue: any = null): Promise<any> {
-	if (!(await fs.pathExists(manifestPath))) {
-		if (defaultValue === null) throw new Error(`No such file: ${manifestPath}`);
-		return defaultValue;
-	}
-
-	const content = await fs.readFile(manifestPath, 'utf8');
-	return JSON.parse(content);
-}
-
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 async function extractPluginFilesFromPackage(existingManifests: any, workDir: string, packageName: string, destDir: string): Promise<any> {
 	const previousDir = chdir(workDir);
 
-	await execCommand2(`npm install ${packageName} --save --ignore-scripts`, { showOutput: false });
+	await execCommand(`npm install ${packageName} --save --ignore-scripts`, { showStderr: false, showStdout: false });
 
 	const pluginDir = resolveRelativePathWithinDir(workDir, 'node_modules', packageName, 'publish');
 
+	if (!(await fs.pathExists(pluginDir))) throw new Error(`Could not find publish directory at ${pluginDir}`);
+
 	const files = await fs.readdir(pluginDir);
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	const manifestFilePath = path.resolve(pluginDir, files.find((f: any) => path.extname(f) === '.json'));
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	const pluginFilePath = path.resolve(pluginDir, files.find((f: any) => path.extname(f) === '.jpl'));
 
 	if (!(await fs.pathExists(manifestFilePath))) throw new Error(`Could not find manifest file at ${manifestFilePath}`);
 	if (!(await fs.pathExists(pluginFilePath))) throw new Error(`Could not find plugin file at ${pluginFilePath}`);
 
-	// At this point, we need to check the manifest ID as it's used in various
-	// places including as directory name and object key in manifests.json, so
-	// it needs to be correct. It's mostly for security reasons. The other
-	// manifest properties are checked when the plugin is loaded into the app.
 	const manifest = await readJsonFile(manifestFilePath);
-	validatePluginId(manifest.id);
-
 	manifest._npm_package_name = packageName;
 
-	checkIfPluginCanBeAdded(existingManifests, manifest);
+	// We need to validate the manifest to make sure the plugin author isn't
+	// trying to override an existing plugin, use an invalid ID, etc..
+	validateUntrustedManifest(manifest, existingManifests);
 
 	const pluginDestDir = resolveRelativePathWithinDir(destDir, manifest.id);
 	await fs.mkdirp(pluginDestDir);
@@ -105,6 +93,7 @@ enum ProcessingActionType {
 	Update = 2,
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 function commitMessage(actionType: ProcessingActionType, manifest: any, previousManifest: any, npmPackage: NpmPackage, error: any): string {
 	const output: string[] = [];
 
@@ -129,10 +118,12 @@ function pluginManifestsPath(repoDir: string): string {
 	return path.resolve(repoDir, 'manifests.json');
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 async function readManifests(repoDir: string): Promise<any> {
 	return readJsonFile(pluginManifestsPath(repoDir), {});
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 async function writeManifests(repoDir: string, manifests: any) {
 	await fs.writeFile(pluginManifestsPath(repoDir), JSON.stringify(manifests, null, '\t'), 'utf8');
 }
@@ -147,29 +138,39 @@ function chdir(path: string): string {
 	return previous;
 }
 
-async function processNpmPackage(npmPackage: NpmPackage, repoDir: string) {
-	const tempDir = `${repoDir}/temp`;
-	const obsoleteManifestsPath = path.resolve(repoDir, 'obsoletes.json');
-
-	await fs.mkdirp(tempDir);
-
+async function processNpmPackage(npmPackage: NpmPackage, repoDir: string, dryRun: boolean) {
 	const originalPluginManifests = await readManifests(repoDir);
-	const obsoleteManifests = await readJsonFile(obsoleteManifestsPath, {});
+	const manifestOverrides = await readManifestOverrides(repoDir);
+	const supersededPackages = getSupersededPackages(manifestOverrides);
+
+	if (supersededPackages.includes(npmPackage.name)) {
+		console.log('Skipping superseded package', npmPackage.name);
+		return;
+	}
+
+	const obsoleteManifests = getObsoleteManifests(manifestOverrides);
 	const existingManifests = {
 		...originalPluginManifests,
 		...obsoleteManifests,
 	};
 
+	const tempDir = `${repoDir}/temp`;
+	await fs.mkdirp(tempDir);
+
 	const packageTempDir = `${tempDir}/packages`;
 
 	await fs.mkdirp(packageTempDir);
 	chdir(packageTempDir);
-	await execCommand2('npm init --yes --loglevel silent', { quiet: true });
+	await execCommand('npm init --yes --loglevel silent', { quiet: true });
 
 	let actionType: ProcessingActionType = ProcessingActionType.Update;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	let manifests: any = {};
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	let manifest: any = {};
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	let error: any = null;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	let previousManifest: any = null;
 
 	try {
@@ -199,6 +200,8 @@ async function processNpmPackage(npmPackage: NpmPackage, repoDir: string) {
 			...manifests,
 		};
 
+		manifests = applyManifestOverrides(manifests, manifestOverrides);
+
 		await writeManifests(repoDir, manifests);
 		await updateReadme(`${repoDir}/README.md`, manifests);
 	}
@@ -206,11 +209,13 @@ async function processNpmPackage(npmPackage: NpmPackage, repoDir: string) {
 	chdir(repoDir);
 	await fs.remove(tempDir);
 
-	if (!(await gitRepoClean())) {
-		await execCommand2('git add -A', { showOutput: false });
-		await execCommand2(['git', 'commit', '-m', commitMessage(actionType, manifest, previousManifest, npmPackage, error)], { showOutput: false });
-	} else {
-		console.info('Nothing to commit');
+	if (!dryRun) {
+		if (!(await gitRepoClean())) {
+			await execCommand('git add -A', { showStdout: false });
+			await execCommand(['git', 'commit', '-m', commitMessage(actionType, manifest, previousManifest, npmPackage, error)], { showStdout: false });
+		} else {
+			console.info('Nothing to commit');
+		}
 	}
 }
 
@@ -223,73 +228,98 @@ async function commandBuild(args: CommandBuildArgs) {
 	await checkPluginRepository(repoDir, dryRun);
 
 	// When starting, always update and commit README, in case something has
-	// been updated via a pull request (for example obsoletes.json being
-	// modified). We do that separately so that the README update doesn't get
-	// mixed up with plugin updates, as in this example:
+	// been updated via a pull request. We do that separately so that the README
+	// update doesn't get mixed up with plugin updates, as in this example:
 	// https://github.com/joplin/plugins/commit/8a65bbbf64bf267674f854a172466ffd4f07c672
 	const manifests = await readManifests(repoDir);
 	await updateReadme(`${repoDir}/README.md`, manifests);
 	const previousDir = chdir(repoDir);
-	if (!(await gitRepoClean())) {
-		console.info('Updating README...');
-		await execCommand2('git add -A', { showOutput: true });
-		await execCommand2('git commit -m "Update README"', { showOutput: true });
+
+	if (!dryRun) {
+		if (!(await gitRepoClean())) {
+			console.info('Updating README...');
+			await execCommand('git add -A');
+			await execCommand('git commit -m "Update README"');
+		}
 	}
+
 	chdir(previousDir);
 
-	const searchResults = (await execCommand2('npm search joplin-plugin --searchlimit 5000 --json', { showOutput: false })).trim();
+	const searchResults = (await execCommand('npm search keywords:joplin-plugin --searchlimit 5000 --json', { showStdout: false, showStderr: false })).trim();
 	const npmPackages = pluginInfoFromSearchResults(JSON.parse(searchResults));
 
 	for (const npmPackage of npmPackages) {
-		await processNpmPackage(npmPackage, repoDir);
+		await processNpmPackage(npmPackage, repoDir, dryRun);
 	}
 
 	if (!dryRun) {
 		await commandUpdateRelease(args);
-		if (!(await gitRepoClean())) {
-			await execCommand2('git add -A', { showOutput: true });
-			await execCommand2('git commit -m "Update stats"', { showOutput: true });
-		}
-	}
 
-	if (!dryRun) await execCommand2('git push');
+		if (!(await gitRepoClean())) {
+			await execCommand('git add -A');
+			await execCommand('git commit -m "Update stats"');
+		}
+
+		await execCommand('git push');
+	}
 }
 
 async function commandVersion() {
-	const p = await readJsonFile(path.resolve(__dirname, 'package.json'));
-	console.info(`Version ${p.version}`);
+	const paths = [
+		path.resolve(__dirname, 'package.json'),
+		path.resolve(__dirname, '..', 'package.json'),
+	];
+
+	for (const p of paths) {
+		try {
+			const info = await readJsonFile(p);
+			console.info(`Version ${info.version}`);
+			return;
+		} catch (error) {
+			// Try the next path
+		}
+	}
+
+	throw new Error(`Cannot find package.json in any of these paths: ${JSON.stringify(paths)}`);
 }
 
 async function main() {
-	const scriptName: string = 'plugin-repo-cli';
+	const scriptName = 'plugin-repo-cli';
 
+	// eslint-disable-next-line @typescript-eslint/ban-types -- Old code before rule was applied
 	const commands: Record<string, Function> = {
 		build: commandBuild,
 		version: commandVersion,
 		updateRelease: commandUpdateRelease,
 	};
 
-	let selectedCommand: string = '';
-	let selectedCommandArgs: string = '';
+	let selectedCommand = '';
+	let selectedCommandArgs = '';
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	function setSelectedCommand(name: string, args: any) {
 		selectedCommand = name;
 		selectedCommandArgs = args;
 	}
 
+	// eslint-disable-next-line no-unused-expressions -- Old code before rule was applied
 	require('yargs')
 		.scriptName(scriptName)
 		.usage('$0 <cmd> [args]')
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		.command('build <plugin-repo-dir> [dry-run]', 'Build the plugin repository', (yargs: any) => {
 			yargs.positional('plugin-repo-dir', {
 				type: 'string',
 				describe: 'Directory where the plugin repository is located',
 			});
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		}, (args: any) => setSelectedCommand('build', args))
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		.command('version', 'Gives version info', () => {}, (args: any) => setSelectedCommand('version', args))
 
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		.command('update-release <plugin-repo-dir>', 'Update GitHub release', () => {}, (args: any) => setSelectedCommand('updateRelease', args))
 
 		.help()

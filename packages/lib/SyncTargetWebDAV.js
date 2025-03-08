@@ -5,6 +5,7 @@ const { FileApi } = require('./file-api.js');
 const Synchronizer = require('./Synchronizer').default;
 const WebDavApi = require('./WebDavApi');
 const { FileApiDriverWebDav } = require('./file-api-driver-webdav');
+const checkProviderIsSupported = require('./utils/webDAVUtils').default;
 
 class SyncTargetWebDAV extends BaseSyncTarget {
 	static id() {
@@ -23,7 +24,15 @@ class SyncTargetWebDAV extends BaseSyncTarget {
 		return _('WebDAV');
 	}
 
+	static description() {
+		return 'The WebDAV protocol allows users to create, change and move documents on a server. There are many WebDAV compatible servers, including SeaFile, Nginx or Apache.';
+	}
+
 	async isAuthenticated() {
+		return true;
+	}
+
+	static requiresPassword() {
 		return true;
 	}
 
@@ -52,6 +61,7 @@ class SyncTargetWebDAV extends BaseSyncTarget {
 		};
 
 		try {
+			checkProviderIsSupported(options.path());
 			const result = await fileApi.stat('');
 			if (!result) throw new Error(`WebDAV directory not found: ${options.path()}`);
 			output.ok = true;

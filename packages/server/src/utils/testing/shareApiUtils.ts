@@ -1,6 +1,6 @@
 import { FolderEntity } from '@joplin/lib/services/database/types';
 import { linkedResourceIds } from '../joplinUtils';
-import { Item, Share, ShareType, ShareUser, ShareUserStatus, User, Uuid } from '../../db';
+import { Item, Share, ShareType, ShareUser, ShareUserStatus, User, Uuid } from '../../services/database/types';
 import routeHandler from '../../middleware/routeHandler';
 import { AppContext } from '../types';
 import { patchApi, postApi } from './apiUtils';
@@ -22,10 +22,13 @@ export async function createFolderShare(sessionId: string, folderId: string): Pr
 }
 
 // For backward compatibility with old tests that used a different tree format.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 function convertTree(tree: any): any[] {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	const output: any[] = [];
 
 	for (const jopId in tree) {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 		const children: any = tree[jopId];
 		const isFolder = children !== null;
 
@@ -44,6 +47,7 @@ function convertTree(tree: any): any[] {
 	return output;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 async function createItemTree3(sessionId: Uuid, userId: Uuid, parentFolderId: string, shareId: Uuid, tree: any[]): Promise<void> {
 	const user = await models().user().load(userId);
 
@@ -66,7 +70,23 @@ async function createItemTree3(sessionId: Uuid, userId: Uuid, parentFolderId: st
 	}
 }
 
-export async function shareFolderWithUser(sharerSessionId: string, shareeSessionId: string, sharedFolderId: string, itemTree: any, acceptShare: boolean = true): Promise<ShareResult> {
+export async function inviteUserToShare(share: Share, sharerSessionId: string, recipientEmail: string, acceptShare = true) {
+	let shareUser = await postApi(sharerSessionId, `shares/${share.id}/users`, {
+		email: recipientEmail,
+	}) as ShareUser;
+
+	shareUser = await models().shareUser().load(shareUser.id);
+
+	if (acceptShare) {
+		const session = await models().session().createUserSession(shareUser.user_id);
+		await patchApi(session.id, `share_users/${shareUser.id}`, { status: ShareUserStatus.Accepted });
+	}
+
+	return shareUser;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
+export async function shareFolderWithUser(sharerSessionId: string, shareeSessionId: string, sharedFolderId: string, itemTree: any, acceptShare = true): Promise<ShareResult> {
 	itemTree = Array.isArray(itemTree) ? itemTree : convertTree(itemTree);
 
 	const sharee = await models().session().sessionUser(shareeSessionId);
@@ -93,15 +113,7 @@ export async function shareFolderWithUser(sharerSessionId: string, shareeSession
 		}
 	}
 
-	let shareUser = await postApi(sharerSessionId, `shares/${share.id}/users`, {
-		email: sharee.email,
-	}) as ShareUser;
-
-	shareUser = await models().shareUser().load(shareUser.id);
-
-	if (acceptShare) {
-		await patchApi(shareeSessionId, `share_users/${shareUser.id}`, { status: ShareUserStatus.Accepted });
-	}
+	const shareUser = await inviteUserToShare(share, sharerSessionId, sharee.email, acceptShare);
 
 	await models().share().updateSharedItems3();
 
@@ -143,12 +155,15 @@ export async function shareWithUserAndAccept(sharerSessionId: string, shareeSess
 
 	shareUser = await models().shareUser().load(shareUser.id);
 
-	await patchApi(shareeSessionId, `share_users/${shareUser.id}`, { status: ShareUserStatus.Accepted });
+	await respondInvitation(shareeSessionId, shareUser.id, ShareUserStatus.Accepted);
 
 	await models().share().updateSharedItems3();
-	// await models().share().updateSharedItems2(sharee.id);
 
 	return { share, item, shareUser };
+}
+
+export async function respondInvitation(recipientSessionId: Uuid, shareUserId: Uuid, status: ShareUserStatus) {
+	await patchApi(recipientSessionId, `share_users/${shareUserId}`, { status });
 }
 
 export async function postShareContext(sessionId: string, shareType: ShareType, itemId: Uuid): Promise<AppContext> {

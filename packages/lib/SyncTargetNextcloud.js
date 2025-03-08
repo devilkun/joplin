@@ -25,7 +25,15 @@ class SyncTargetNextcloud extends BaseSyncTarget {
 		return _('Nextcloud');
 	}
 
+	static description() {
+		return 'A suite of client-server software for creating and using file hosting services.';
+	}
+
 	async isAuthenticated() {
+		return true;
+	}
+
+	static requiresPassword() {
 		return true;
 	}
 

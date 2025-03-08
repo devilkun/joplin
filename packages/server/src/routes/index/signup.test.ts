@@ -1,14 +1,14 @@
 import config from '../../config';
-import { NotificationKey } from '../../models/NotificationModel';
 import { AccountType } from '../../models/UserModel';
 import { getCanShareFolder, getMaxItemSize } from '../../models/utils/user';
 import { MB } from '../../utils/bytes';
+import { cookieGet } from '../../utils/cookies';
 import { execRequestC } from '../../utils/testing/apiUtils';
 import { beforeAllDb, afterAllTests, beforeEachDb, models } from '../../utils/testing/testUtils';
-import uuidgen from '../../utils/uuidgen';
+import { uuidgen } from '@joplin/lib/uuid';
 import { FormUser } from './signup';
 
-describe('index_signup', function() {
+describe('index_signup', () => {
 
 	beforeAll(async () => {
 		await beforeAllDb('index_signup');
@@ -22,7 +22,7 @@ describe('index_signup', function() {
 		await beforeEachDb();
 	});
 
-	test('should create a new account', async function() {
+	test('should create a new account', async () => {
 		const password = uuidgen();
 		const formUser: FormUser = {
 			full_name: 'Toto',
@@ -50,13 +50,8 @@ describe('index_signup', function() {
 		expect(getMaxItemSize(user)).toBe(10 * MB);
 
 		// Check that the user is logged in
-		const session = await models().session().load(context.cookies.get('sessionId'));
+		const session = await models().session().load(cookieGet(context, 'sessionId'));
 		expect(session.user_id).toBe(user.id);
-
-		// Check that the notification has been created
-		const notifications = await models().notification().allUnreadByUserId(user.id);
-		expect(notifications.length).toBe(1);
-		expect(notifications[0].key).toBe(NotificationKey.ConfirmEmail);
 	});
 
 });

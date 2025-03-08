@@ -1,16 +1,17 @@
-import { SqlQuery } from '../../database';
 import JoplinDatabase from '../../JoplinDatabase';
 import BaseItem from '../../models/BaseItem';
 import Setting from '../../models/Setting';
-const SyncTargetRegistry = require('../../SyncTargetRegistry');
+import SyncTargetRegistry from '../../SyncTargetRegistry';
+import { SqlQuery } from '../database/types';
 
 async function clearSyncContext() {
 	const syncTargetIds = SyncTargetRegistry.allIds();
 
 	for (const syncTargetId of syncTargetIds) {
 		const key = `sync.${syncTargetId}.context`;
-		if (!Setting.keyExists(key)) break;
-		Setting.resetKey(key);
+		if (Setting.keyExists(key)) {
+			Setting.resetKey(key);
+		}
 	}
 
 	await Setting.saveAll();

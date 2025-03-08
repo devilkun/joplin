@@ -3,7 +3,7 @@ import Router from '../../utils/Router';
 import { RouteType } from '../../utils/types';
 import { AppContext } from '../../utils/types';
 import { ErrorForbidden, ErrorNotFound } from '../../utils/errors';
-import { Item, Share } from '../../db';
+import { Item, Share } from '../../services/database/types';
 import { ModelType } from '@joplin/lib/BaseModel';
 import { FileViewerResponse, renderItem as renderJoplinItem } from '../../utils/joplinUtils';
 import { friendlySafeFilename } from '@joplin/lib/path-utils';
@@ -19,6 +19,11 @@ async function renderItem(context: AppContext, item: Item, share: Share): Promis
 		size: item.content_size,
 		filename: '',
 	};
+}
+
+function createContentDispositionHeader(filename: string) {
+	const encoded = encodeURIComponent(friendlySafeFilename(filename, null, true));
+	return `attachment; filename*=UTF-8''${encoded}; filename="${encoded}"`;
 }
 
 const router: Router = new Router(RouteType.Web);
@@ -46,7 +51,7 @@ router.get('shares/:id', async (path: SubPath, ctx: AppContext) => {
 	ctx.response.body = result.body;
 	ctx.response.set('Content-Type', result.mime);
 	ctx.response.set('Content-Length', result.size.toString());
-	if (result.filename) ctx.response.set('Content-disposition', `attachment; filename="${friendlySafeFilename(result.filename)}"`);
+	if (result.filename) ctx.response.set('Content-disposition', createContentDispositionHeader(result.filename));
 	return new Response(ResponseType.KoaResponse, ctx.response);
 }, RouteType.UserContent);
 

@@ -1,4 +1,4 @@
-import eventManager from '../eventManager';
+import eventManager, { EventListenerCallback, EventName } from '../eventManager';
 import shim from '../shim';
 import { _ } from '../locale';
 import keysRegExp from './KeymapService_keysRegExp';
@@ -20,14 +20,17 @@ const defaultKeymapItems = {
 		{ accelerator: 'Cmd+Q', command: 'quit' },
 		{ accelerator: 'Cmd+,', command: 'config' },
 		{ accelerator: 'Cmd+W', command: 'closeWindow' },
+		{ accelerator: 'Cmd+M', command: 'minimizeWindow' },
 		{ accelerator: 'Cmd+C', command: 'textCopy' },
 		{ accelerator: 'Cmd+X', command: 'textCut' },
 		{ accelerator: 'Cmd+V', command: 'textPaste' },
+		{ accelerator: 'Cmd+Shift+V', command: 'pasteAsText' },
 		{ accelerator: 'Cmd+A', command: 'textSelectAll' },
 		{ accelerator: 'Cmd+B', command: 'textBold' },
 		{ accelerator: 'Cmd+I', command: 'textItalic' },
 		{ accelerator: 'Cmd+K', command: 'textLink' },
 		{ accelerator: 'Cmd+`', command: 'textCode' },
+		{ accelerator: 'Option+Cmd+-', command: 'textBulletedList' },
 		{ accelerator: 'Shift+Cmd+T', command: 'insertDateTime' },
 		{ accelerator: 'Shift+Cmd+F', command: 'focusSearch' },
 		{ accelerator: 'Cmd+F', command: 'showLocalSearch' },
@@ -35,9 +38,11 @@ const defaultKeymapItems = {
 		{ accelerator: 'Shift+Cmd+L', command: 'focusElementNoteList' },
 		{ accelerator: 'Shift+Cmd+N', command: 'focusElementNoteTitle' },
 		{ accelerator: 'Shift+Cmd+B', command: 'focusElementNoteBody' },
+		{ accelerator: 'Shift+Cmd+O', command: 'focusElementToolbar' },
 		{ accelerator: 'Option+Cmd+S', command: 'toggleSideBar' },
 		{ accelerator: 'Option+Cmd+L', command: 'toggleNoteList' },
 		{ accelerator: 'Cmd+L', command: 'toggleVisiblePanes' },
+		{ accelerator: 'Option+Cmd+V', command: 'toggleEditorPlugin' },
 		{ accelerator: 'Cmd+0', command: 'zoomActualSize' },
 		{ accelerator: 'Cmd+E', command: 'toggleExternalEditing' },
 		{ accelerator: 'Option+Cmd+T', command: 'setTags' },
@@ -54,6 +59,13 @@ const defaultKeymapItems = {
 		{ accelerator: 'Option+Cmd+A', command: 'editor.sortSelectedLines' },
 		{ accelerator: 'Option+Up', command: 'editor.swapLineUp' },
 		{ accelerator: 'Option+Down', command: 'editor.swapLineDown' },
+		{ accelerator: 'Option+Cmd+1', command: 'switchProfile1' },
+		{ accelerator: 'Option+Cmd+2', command: 'switchProfile2' },
+		{ accelerator: 'Option+Cmd+3', command: 'switchProfile3' },
+		{ accelerator: 'Option+Cmd+Backspace', command: 'permanentlyDeleteNote' },
+		{ accelerator: 'Option+Cmd+N', command: 'openNoteInNewWindow' },
+		{ accelerator: 'Ctrl+M', command: 'toggleTabMovesFocus' },
+		{ accelerator: 'Shift+Option+L', command: 'linkToNote' },
 	],
 	default: [
 		{ accelerator: 'Ctrl+N', command: 'newNote' },
@@ -63,11 +75,13 @@ const defaultKeymapItems = {
 		{ accelerator: 'Ctrl+C', command: 'textCopy' },
 		{ accelerator: 'Ctrl+X', command: 'textCut' },
 		{ accelerator: 'Ctrl+V', command: 'textPaste' },
+		{ accelerator: 'Ctrl+Shift+V', command: 'pasteAsText' },
 		{ accelerator: 'Ctrl+A', command: 'textSelectAll' },
 		{ accelerator: 'Ctrl+B', command: 'textBold' },
 		{ accelerator: 'Ctrl+I', command: 'textItalic' },
 		{ accelerator: 'Ctrl+K', command: 'textLink' },
 		{ accelerator: 'Ctrl+`', command: 'textCode' },
+		{ accelerator: 'Ctrl+Alt+-', command: 'textBulletedList' },
 		{ accelerator: 'Ctrl+Shift+T', command: 'insertDateTime' },
 		{ accelerator: 'F6', command: 'focusSearch' },
 		{ accelerator: 'Ctrl+F', command: 'showLocalSearch' },
@@ -75,9 +89,12 @@ const defaultKeymapItems = {
 		{ accelerator: 'Ctrl+Shift+L', command: 'focusElementNoteList' },
 		{ accelerator: 'Ctrl+Shift+N', command: 'focusElementNoteTitle' },
 		{ accelerator: 'Ctrl+Shift+B', command: 'focusElementNoteBody' },
+		{ accelerator: 'Ctrl+Shift+O', command: 'focusElementToolbar' },
 		{ accelerator: 'F10', command: 'toggleSideBar' },
+		{ accelerator: 'Ctrl+Shift+M', command: 'toggleMenuBar' },
 		{ accelerator: 'F11', command: 'toggleNoteList' },
 		{ accelerator: 'Ctrl+L', command: 'toggleVisiblePanes' },
+		{ accelerator: 'Alt+Ctrl+V', command: 'toggleEditorPlugin' },
 		{ accelerator: 'Ctrl+0', command: 'zoomActualSize' },
 		{ accelerator: 'Ctrl+E', command: 'toggleExternalEditing' },
 		{ accelerator: 'Ctrl+Alt+T', command: 'setTags' },
@@ -95,6 +112,12 @@ const defaultKeymapItems = {
 		{ accelerator: 'Ctrl+Alt+S', command: 'editor.sortSelectedLines' },
 		{ accelerator: 'Alt+Up', command: 'editor.swapLineUp' },
 		{ accelerator: 'Alt+Down', command: 'editor.swapLineDown' },
+		{ accelerator: 'Ctrl+Alt+1', command: 'switchProfile1' },
+		{ accelerator: 'Ctrl+Alt+2', command: 'switchProfile2' },
+		{ accelerator: 'Ctrl+Alt+3', command: 'switchProfile3' },
+		{ accelerator: 'Ctrl+Alt+N', command: 'openNoteInNewWindow' },
+		{ accelerator: 'Ctrl+M', command: 'toggleTabMovesFocus' },
+		{ accelerator: 'Shift+Alt+L', command: 'linkToNote' },
 	],
 };
 
@@ -114,6 +137,7 @@ export default class KeymapService extends BaseService {
 	private customKeymapPath: string;
 	private defaultKeymapItems: KeymapItem[];
 	private lastSaveTime_: number;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	private modifiersRegExp: any;
 
 	public constructor() {
@@ -189,9 +213,9 @@ export default class KeymapService extends BaseService {
 			this.lastSaveTime_ = Date.now();
 
 			// Refresh the menu items so that the changes are reflected
-			eventManager.emit('keymapChange');
-		} catch (err) {
-			const message = err.message || '';
+			eventManager.emit(EventName.KeymapChange);
+		} catch (error) {
+			const message = error.message || '';
 			throw new Error(_('Error: %s', message));
 		}
 	}
@@ -252,10 +276,11 @@ export default class KeymapService extends BaseService {
 
 	public getCustomKeymapItems() {
 		const customkeymapItems: KeymapItem[] = [];
+		// eslint-disable-next-line github/array-foreach -- Old code before rule was applied
 		this.defaultKeymapItems.forEach(({ command, accelerator }) => {
 			const currentAccelerator = this.getAccelerator(command);
 
-			// Only the customized/changed keymap items are neccessary for the custom keymap
+			// Only the customized/changed keymap items are necessary for the custom keymap
 			// Customizations can be merged with the original keymap at the runtime
 			if (this.getAccelerator(command) !== accelerator) {
 				customkeymapItems.push({ command, accelerator: currentAccelerator });
@@ -295,9 +320,9 @@ export default class KeymapService extends BaseService {
 			// Validate the entire keymap for duplicates
 			// Throws whenever there are duplicate Accelerators used in the keymap
 			this.validateKeymap();
-		} catch (err) {
+		} catch (error) {
 			this.resetKeymap(); // Discard all the changes if there are any issues
-			throw err;
+			throw error;
 		}
 	}
 
@@ -333,13 +358,13 @@ export default class KeymapService extends BaseService {
 			if (usedAccelerators.has(itemAccelerator)) {
 				const originalItem = (proposedKeymapItem && proposedKeymapItem.accelerator === itemAccelerator)
 					? proposedKeymapItem
-					: Object.values(this.keymap).find(_item => _item.accelerator == itemAccelerator);
+					: Object.values(this.keymap).find(_item => _item.accelerator === itemAccelerator);
 
 				throw new Error(_(
 					'Accelerator "%s" is used for "%s" and "%s" commands. This may lead to unexpected behaviour.',
 					itemAccelerator,
 					originalItem.command,
-					itemCommand
+					itemCommand,
 				));
 			} else if (itemAccelerator) {
 				usedAccelerators.add(itemAccelerator);
@@ -369,6 +394,7 @@ export default class KeymapService extends BaseService {
 		if (!isValid) throw new Error(_('Accelerator "%s" is not valid.', accelerator));
 	}
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Old code before rule was applied
 	public domToElectronAccelerator(event: any) {
 		const parts = [];
 
@@ -399,11 +425,18 @@ export default class KeymapService extends BaseService {
 		return parts.join('+');
 	}
 
-	public on(eventName: string, callback: Function) {
+	// Electron and aria-keyshortcuts have slightly different formats for accelerators.
+	// See https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-keyshortcuts
+	public getAriaKeyShortcuts(commandName: string) {
+		const electronAccelerator = this.getAccelerator(commandName);
+		return electronAccelerator.replace('Ctrl', 'Control');
+	}
+
+	public on<Name extends EventName>(eventName: Name, callback: EventListenerCallback<Name>) {
 		eventManager.on(eventName, callback);
 	}
 
-	public off(eventName: string, callback: Function) {
+	public off<Name extends EventName>(eventName: Name, callback: EventListenerCallback<Name>) {
 		eventManager.off(eventName, callback);
 	}
 
